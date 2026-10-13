@@ -6,19 +6,19 @@
       "id": "z0p1",
       "label": "0.1 Z_sun",
       "description": "Solar abundance pattern scaled to 0.1 times solar metallicity.",
-      "data_root": "https://raw.githubusercontent.com/eladtan/GLOW/main/tables/z0p1/web_data"
+      "data_root": "https://raw.githubusercontent.com/glow-opacity/glow-opacity.github.io/main/tables/z0p1/web_data"
     },
     {
       "id": "z1",
       "label": "1 Z_sun",
       "description": "Solar abundance pattern at solar metallicity.",
-      "data_root": "https://raw.githubusercontent.com/eladtan/GLOW/main/tables/z1/web_data"
+      "data_root": "https://raw.githubusercontent.com/glow-opacity/glow-opacity.github.io/main/tables/z1/web_data"
     },
     {
       "id": "z10",
       "label": "10 Z_sun",
       "description": "Solar abundance pattern scaled to 10 times solar metallicity.",
-      "data_root": "https://raw.githubusercontent.com/eladtan/GLOW/main/tables/z10/web_data"
+      "data_root": "https://raw.githubusercontent.com/glow-opacity/glow-opacity.github.io/main/tables/z10/web_data"
     }
   ]
 }

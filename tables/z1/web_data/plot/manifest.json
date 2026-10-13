@@ -14,11 +14,11 @@
         "rho",
         "temp"
       ],
-      "compressed_bytes": 63344,
+      "compressed_bytes": 63872,
       "dtype": "float32-le",
       "file": "kplanck_grey.f64.gz",
       "positive_count": 16384,
-      "sha256": "502345decc9fc22f1f04b5ce0a966345f25c7c119dfe7f21dd1593cb883d090e",
+      "sha256": "eee7755519f57f8658527288e4f46d11a536cf00975b62c1e342a6315bed74a5",
       "shape": [
         128,
         128
@@ -31,11 +31,11 @@
         "rho",
         "temp"
       ],
-      "compressed_bytes": 37672,
+      "compressed_bytes": 37965,
       "dtype": "float32-le",
       "file": "kplanck_scattering_grey.f64.gz",
       "positive_count": 16384,
-      "sha256": "9bf4e3ba146eceb55a1cd787cf78586cf76385f3da6ba7770909a7c9f7fe357f",
+      "sha256": "a906b1ba1b752fb696896ce4175467f6f374dc4f466c330cc006f5a5ae3e6735",
       "shape": [
         128,
         128
@@ -48,11 +48,11 @@
         "rho",
         "temp"
       ],
-      "compressed_bytes": 41762,
+      "compressed_bytes": 42009,
       "dtype": "float32-le",
       "file": "krosseland_grey.f64.gz",
       "positive_count": 16384,
-      "sha256": "f1cf8d9e466465636593f13a8570fcd9a66c5d3c8b82843fd2f4451033e00fe7",
+      "sha256": "ce5c82dc7f1d8d296ee362226fb3d89478a7fab79aa5950aecc05cf71ba848b2",
       "shape": [
         128,
         128
@@ -65,11 +65,11 @@
         "rho",
         "temp"
       ],
-      "compressed_bytes": 63469,
+      "compressed_bytes": 63757,
       "dtype": "float32-le",
       "file": "krosseland_absorption_grey.f64.gz",
       "positive_count": 16384,
-      "sha256": "d83e534c87c78597fc284f21285243a35dddbb766cdee62bf1948e4d3254bc87",
+      "sha256": "3385a43bae38f67eac644ba36de11871fc7b37a13c807c49bc37f10e9aae0f5c",
       "shape": [
         128,
         128

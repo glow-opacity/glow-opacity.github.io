@@ -118,7 +118,7 @@ export function makeLogEdges(minimum, maximum, numberOfBins) {
 }
 
 function approximatelyEqual(a, b) {
-  return Math.abs(a - b) <= EXACT_REL_TOL * Math.max(1, Math.abs(a), Math.abs(b));
+  return Math.abs(a - b) <= EXACT_REL_TOL * Math.max(Math.abs(a), Math.abs(b));
 }
 
 export function findLogBracket(axis, requestedValue, label = 'Value') {

@@ -40,6 +40,9 @@ def main() -> None:
                 payload[field] = np.full(
                     (8, 3, stop - start), value, dtype=np.float64
                 )
+            payload['planck_flags'] = np.zeros((8, 3, stop - start), dtype=np.uint8)
+            payload['planck_flags'][1, 2, 0] = 4
+            payload['rosseland_flags'] = np.zeros((8, 3, stop - start), dtype=np.uint8)
             np.savez_compressed(
                 parts / f'opacity_group_collapse_part{part_index:02d}.npz',
                 **payload,
@@ -81,6 +84,16 @@ def main() -> None:
         with gzip.open(out / chunk['file'], 'rb') as handle:
             values = np.frombuffer(handle.read(), dtype='<f4').reshape(chunk['shape'])
         np.testing.assert_allclose(values, 0.4, rtol=2e-7, atol=0.0)
+
+        assert manifest['quality_flags']['fields']['kplanck']['array'] == 'planck_flags'
+        flag_chunk = next(
+            item for item in first_part['flag_chunks']
+            if item['flags'] == 'planck_flags' and item['group_start'] == 0
+        )
+        assert flag_chunk['dtype'] == 'uint8-le'
+        with gzip.open(out / flag_chunk['file'], 'rb') as handle:
+            flags = np.frombuffer(handle.read(), dtype='u1').reshape(flag_chunk['shape'])
+        assert flags[1, 2, 0] == 4 and np.count_nonzero(flags) == 1
 
     print('Browser-data builder test passed.')
 

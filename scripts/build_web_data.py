@@ -54,6 +54,24 @@ FIELD_METADATA = {
     },
 }
 
+# Per-group quality bits written by the generator (see FLAG_* there).  Each field
+# reads one flag array, restricted to the bits that apply to it.
+FLAG_BITS = {
+    'lines_aliased': 1,
+    'lines_aliased_x2': 2,
+    'lines_unresolved': 4,
+    'rosseland_lines_rescaled': 8,
+    'sub_cell': 16,
+    'grey_rescaled': 32,
+}
+FIELD_FLAGS = {
+    'kplanck': {'array': 'planck_flags', 'mask': 1 | 2 | 4 | 16 | 32},
+    'kplanck_scattering': {'array': 'planck_flags', 'mask': 16 | 32},
+    'krosseland': {'array': 'rosseland_flags', 'mask': 8 | 16 | 32},
+    'krosseland_absorption': {'array': 'rosseland_flags', 'mask': 8 | 16 | 32},
+}
+FLAG_ARRAYS = ('planck_flags', 'rosseland_flags')
+
 BROWSER_DTYPES = {
     'float32': np.dtype('<f4'),
     'float64': np.dtype('<f8'),
@@ -184,6 +202,27 @@ def main() -> int:
                     )
                     chunks.append(metadata)
 
+            flag_chunks: list[dict[str, object]] = []
+            has_flags = all(name in data.files for name in FLAG_ARRAYS)
+            for name in FLAG_ARRAYS if has_flags else ():
+                flags = np.asarray(data[name])
+                if flags.shape != expected or flags.dtype != np.uint8:
+                    raise ValueError(f'{path.name}:{name} has {flags.shape} {flags.dtype}; expected {expected} uint8')
+                for group_start in range(0, n_groups, args.group_chunk_size):
+                    group_stop = min(n_groups, group_start + args.group_chunk_size)
+                    relative = Path('chunks') / f'part{part_index:02d}' / (
+                        f'{name}_g{group_start:04d}_{group_stop:04d}.u8.gz'
+                    )
+                    metadata = gzip_values(
+                        output_dir / relative,
+                        flags[group_start:group_stop, :, :],
+                        np.dtype('u1'),
+                        args.gzip_level,
+                    )
+                    metadata['file'] = relative.as_posix()
+                    metadata.update({'flags': name, 'group_start': group_start, 'group_stop': group_stop})
+                    flag_chunks.append(metadata)
+
             global_temp_stop = global_temp_start + temp.size
             manifest_parts.append(
                 {
@@ -193,6 +232,7 @@ def main() -> int:
                     'temperature_global_stop': global_temp_stop,
                     'temperature_count': int(temp.size),
                     'chunks': chunks,
+                    'flag_chunks': flag_chunks,
                 }
             )
             global_temp_start = global_temp_stop
@@ -235,6 +275,8 @@ def main() -> int:
             'group_chunk_size': args.group_chunk_size,
         },
         'field_metadata': FIELD_METADATA,
+        'quality_flags': {'bits': FLAG_BITS, 'fields': FIELD_FLAGS}
+        if all(part['flag_chunks'] for part in manifest_parts) else None,
         'parts': manifest_parts,
         'total_compressed_bytes': total_compressed,
     }

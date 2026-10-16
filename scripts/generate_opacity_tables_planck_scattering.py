@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import json
 import math
 import os
@@ -52,6 +53,7 @@ from pathlib import Path
 os.environ.setdefault("PYTHONNOUSERSITE", "1")
 
 import numpy as np
+import scipy.optimize
 
 try:
     import h5py
@@ -73,6 +75,28 @@ COLLAPSE_FIELDS = (
 MAX_VALIDATION_EXAMPLES = 5
 EMPTY_BIN_QUADRATURE_ORDER = 32
 EMPTY_BIN_GL_X, EMPTY_BIN_GL_W = np.polynomial.legendre.leggauss(EMPTY_BIN_QUADRATURE_ORDER)
+SUBINTERVAL_GL_ORDER = 4
+SUBINTERVAL_GL_X, SUBINTERVAL_GL_W = np.polynomial.legendre.leggauss(SUBINTERVAL_GL_ORDER)
+# Group means may be moved onto STAR's grey means only by quadrature-sized factors: up to 2%
+# silently, up to 30% with the grey_rescaled flag (STAR's Newton-Cotes rule and the exact group
+# integrals differ by up to 26% where a few point-sampled bound-free edges carry the continuum), and never beyond.
+RESIDUAL_LOG_TOLERANCE = math.log(1.02)
+RESIDUAL_LOG_LIMIT = math.log(1.30)
+# |ln s_P| thresholds for the line scale s_P = STAR line Planck mean / grid line Planck mean.
+LINE_ALIASED_LOG = 0.1
+LINE_ALIASED_X2_LOG = math.log(2.0)
+LINE_UNRESOLVED_LOG = math.log(10.0)
+GROUP_LINE_FRACTION_FLAG = 0.2
+# Unresolved line content is flagged only when it exceeds this fraction of the Planck mean.
+LINE_UNRESOLVED_FLAG_FRACTION = 0.01
+ROSSELAND_RESCALE_FLAG_LOG = 0.1
+# Per-group quality bits published with the group tables.
+FLAG_LINES_ALIASED = 1
+FLAG_LINES_ALIASED_X2 = 2
+FLAG_LINES_UNRESOLVED = 4
+FLAG_ROSSELAND_LINES_RESCALED = 8
+FLAG_SUB_CELL = 16
+FLAG_GREY_RESCALED = 32
 
 
 class NonFiniteOutputError(Exception):
@@ -481,218 +505,6 @@ def log_frequency_centers(edges: np.ndarray) -> np.ndarray:
     return np.sqrt(edges[:-1] * edges[1:])
 
 
-def interpolate_nonnegative_log_energy(
-    query_energy: np.ndarray,
-    sample_energy: np.ndarray,
-    sample_opacity: np.ndarray,
-) -> np.ndarray:
-    """Interpolate a non-negative spectrum in log photon energy.
-
-    Positive-to-positive intervals use log(opacity)-log(energy) interpolation.
-    Zero-to-zero intervals remain exactly zero.  Mixed zero/positive intervals
-    use opacity linear in log(energy), so an isolated zero endpoint does not
-    create an artificial zero interval and no arbitrary opacity floor is added.
-    """
-    query = np.asarray(query_energy, dtype=np.float64)
-    energy = np.asarray(sample_energy, dtype=np.float64)
-    opacity = np.asarray(sample_opacity, dtype=np.float64)
-    if energy.ndim != 1 or opacity.ndim != 1 or energy.size != opacity.size:
-        raise ValueError("sample energy and opacity must be one-dimensional and aligned")
-    good = (
-        np.isfinite(energy)
-        & (energy > 0.0)
-        & np.isfinite(opacity)
-        & (opacity >= 0.0)
-    )
-    energy = energy[good]
-    opacity = opacity[good]
-    if energy.size < 2:
-        raise ValueError("at least two finite non-negative spectral samples are required")
-    order = np.argsort(energy, kind="mergesort")
-    energy = energy[order]
-    opacity = opacity[order]
-    unique = np.concatenate(([True], np.diff(energy) > 0.0))
-    energy = energy[unique]
-    opacity = opacity[unique]
-    if energy.size < 2:
-        raise ValueError("at least two distinct photon energies are required")
-
-    tolerance = 64.0 * np.finfo(np.float64).eps
-    if np.any(query < energy[0] * (1.0 - tolerance)) or np.any(
-        query > energy[-1] * (1.0 + tolerance)
-    ):
-        raise ValueError("interpolation query lies outside the raw photon-energy grid")
-    query = np.clip(query, energy[0], energy[-1])
-
-    upper = np.searchsorted(energy, query, side="right")
-    upper = np.clip(upper, 1, energy.size - 1)
-    lower = upper - 1
-    exact_last = query == energy[-1]
-    lower[exact_last] = energy.size - 1
-    upper[exact_last] = energy.size - 1
-
-    result = np.empty_like(query)
-    exact = lower == upper
-    result[exact] = opacity[lower[exact]]
-    if np.all(exact):
-        return result
-
-    active = ~exact
-    e0 = energy[lower[active]]
-    e1 = energy[upper[active]]
-    y0 = opacity[lower[active]]
-    y1 = opacity[upper[active]]
-    fraction = (np.log(query[active]) - np.log(e0)) / (np.log(e1) - np.log(e0))
-
-    values = np.empty_like(fraction)
-    both_positive = (y0 > 0.0) & (y1 > 0.0)
-    both_zero = (y0 == 0.0) & (y1 == 0.0)
-    mixed = ~(both_positive | both_zero)
-    values[both_positive] = np.exp(
-        (1.0 - fraction[both_positive]) * np.log(y0[both_positive])
-        + fraction[both_positive] * np.log(y1[both_positive])
-    )
-    values[both_zero] = 0.0
-    values[mixed] = (1.0 - fraction[mixed]) * y0[mixed] + fraction[mixed] * y1[mixed]
-    result[active] = values
-    return result
-
-
-def _row_scaled_weights(log_weight: np.ndarray) -> np.ndarray:
-    """Scale each row of logarithmic quadrature weights by its row maximum."""
-    log_weight = np.asarray(log_weight, dtype=np.float64)
-    maximum = np.max(log_weight, axis=1, keepdims=True)
-    return np.exp(log_weight - maximum)
-
-
-def collapse_empty_groups_from_interpolated_spectrum(
-    hnu_ev: np.ndarray,
-    u: np.ndarray,
-    kappa_a: np.ndarray,
-    sc: np.ndarray,
-    hnu_edges: np.ndarray,
-    empty_groups: np.ndarray,
-) -> dict[str, np.ndarray]:
-    """Collapse groups with no raw samples using raw-spectrum interpolation.
-
-    Gauss-Legendre nodes are placed strictly inside each empty output group.
-    This avoids treating an isolated zero sample at a group edge as a finite
-    zero-width interval.  All weight ratios are evaluated after row-wise
-    logarithmic scaling, so Wien-tail factors cancel before exponentiation.
-    """
-    empty_groups = np.asarray(empty_groups, dtype=np.int64)
-    n_empty = empty_groups.size
-    if n_empty == 0:
-        return {field: np.empty(0, dtype=np.float64) for field, _ in COLLAPSE_FIELDS}
-
-    hnu_ev = np.asarray(hnu_ev, dtype=np.float64)
-    u = np.asarray(u, dtype=np.float64)
-    kappa_a = np.asarray(kappa_a, dtype=np.float64)
-    sc = np.asarray(sc, dtype=np.float64)
-    common = (
-        np.isfinite(hnu_ev)
-        & (hnu_ev > 0.0)
-        & np.isfinite(u)
-        & (u > 0.0)
-        & np.isfinite(kappa_a)
-        & (kappa_a >= 0.0)
-        & np.isfinite(sc)
-        & (sc >= 0.0)
-    )
-    hnu_raw = hnu_ev[common]
-    u_raw = u[common]
-    absorption_raw = kappa_a[common]
-    scattering_raw = sc[common]
-    if hnu_raw.size < 2:
-        raise ValueError("cannot interpolate empty groups from fewer than two raw samples")
-
-    order = np.argsort(hnu_raw, kind="mergesort")
-    hnu_raw = hnu_raw[order]
-    u_raw = u_raw[order]
-    absorption_raw = absorption_raw[order]
-    scattering_raw = scattering_raw[order]
-    unique = np.concatenate(([True], np.diff(hnu_raw) > 0.0))
-    hnu_raw = hnu_raw[unique]
-    u_raw = u_raw[unique]
-    absorption_raw = absorption_raw[unique]
-    scattering_raw = scattering_raw[unique]
-
-    temperature_samples = hnu_raw / u_raw
-    temperature = float(np.median(temperature_samples))
-    if not math.isfinite(temperature) or temperature <= 0.0:
-        raise ValueError("could not infer a positive temperature from hnu/u")
-    relative_spread = float(
-        np.max(np.abs(temperature_samples / temperature - 1.0))
-    )
-    if relative_spread > 1.0e-8:
-        raise ValueError(
-            "raw u is not proportional to photon energy at fixed temperature; "
-            f"maximum relative hnu/u spread is {relative_spread:.3e}"
-        )
-
-    low_u = hnu_edges[empty_groups] / temperature
-    high_u = hnu_edges[empty_groups + 1] / temperature
-    midpoint = 0.5 * (low_u + high_u)
-    half_width = 0.5 * (high_u - low_u)
-    u_nodes = midpoint[:, None] + half_width[:, None] * EMPTY_BIN_GL_X[None, :]
-    hnu_nodes = temperature * u_nodes
-
-    absorption = interpolate_nonnegative_log_energy(
-        hnu_nodes.reshape(-1), hnu_raw, absorption_raw
-    ).reshape(n_empty, EMPTY_BIN_QUADRATURE_ORDER)
-    scattering = interpolate_nonnegative_log_energy(
-        hnu_nodes.reshape(-1), hnu_raw, scattering_raw
-    ).reshape(n_empty, EMPTY_BIN_QUADRATURE_ORDER)
-    total = absorption + scattering
-
-    log_gl_weight = np.log(EMPTY_BIN_GL_W)[None, :]
-    planck_scaled = _row_scaled_weights(planck_log_weight_u(u_nodes) + log_gl_weight)
-    rosseland_scaled = _row_scaled_weights(
-        rosseland_log_weight_u(u_nodes) + log_gl_weight
-    )
-
-    planck_denominator = np.sum(planck_scaled, axis=1)
-    planck_numerator = np.sum(planck_scaled * absorption, axis=1)
-    planck = planck_numerator / planck_denominator
-    planck[np.all(absorption == 0.0, axis=1)] = 0.0
-
-    def harmonic(opacity: np.ndarray) -> np.ndarray:
-        result = np.empty(n_empty, dtype=np.float64)
-        zero_interval = np.any(opacity == 0.0, axis=1)
-        result[zero_interval] = 0.0
-        positive_rows = ~zero_interval
-        if np.any(positive_rows):
-            numerator = np.sum(rosseland_scaled[positive_rows], axis=1)
-            denominator = np.sum(
-                rosseland_scaled[positive_rows] / opacity[positive_rows], axis=1
-            )
-            result[positive_rows] = numerator / denominator
-        return result
-
-    rosseland_total = harmonic(total)
-    planck_scattering_numerator = np.sum(planck_scaled * scattering, axis=1)
-    planck_scattering = planck_scattering_numerator / planck_denominator
-    planck_scattering[np.all(scattering == 0.0, axis=1)] = 0.0
-
-    chi_safe = np.maximum(total, CHI_MIN)
-    log_transport_weight = (
-        rosseland_log_weight_u(u_nodes)
-        + log_gl_weight
-        - np.log(chi_safe)
-    )
-    transport_scaled = _row_scaled_weights(log_transport_weight)
-    transport_denominator = np.sum(transport_scaled, axis=1)
-    transport_numerator = np.sum(transport_scaled * absorption, axis=1)
-    rosseland_absorption = transport_numerator / transport_denominator
-    rosseland_absorption[np.all(absorption == 0.0, axis=1)] = 0.0
-
-    return {
-        "kplanck_scattering": planck_scattering,
-        "kplanck": planck,
-        "krosseland": rosseland_total,
-        "krosseland_absorption": rosseland_absorption,
-    }
-
 def planck_mean_bin(u: np.ndarray, spec: np.ndarray, mask: np.ndarray) -> float:
     ub = np.asarray(u[mask], dtype=np.float64)
     sb = np.asarray(spec[mask], dtype=np.float64)
@@ -813,164 +625,6 @@ def _infer_temperature_from_hnu_u(
     return temperature
 
 
-def _all_group_quadrature(
-    hnu_ev: np.ndarray,
-    u: np.ndarray,
-    kappa_a: np.ndarray,
-    sc: np.ndarray,
-    hnu_edges: np.ndarray,
-) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
-    """Collapse every output group through one common quadrature path.
-
-    Every group, including groups that contain raw samples, is evaluated on
-    32-point Gauss-Legendre nodes spanning the complete group interval.  The
-    raw absorption and scattering spectra are interpolated to those nodes.
-    This avoids omitted intervals at group boundaries and makes the generator
-    use the same physical group weights as the browser.
-
-    Returns
-    -------
-    collapse:
-        Mapping of the four published group opacities.
-    log_planck_group_weight:
-        log integral_g W_P(u) du for every group.
-    log_rosseland_group_weight:
-        log integral_g W_R(u) du for every group.
-    """
-    hnu_ev = np.asarray(hnu_ev, dtype=np.float64)
-    u = np.asarray(u, dtype=np.float64)
-    kappa_a = np.asarray(kappa_a, dtype=np.float64)
-    sc = np.asarray(sc, dtype=np.float64)
-    hnu_edges = np.asarray(hnu_edges, dtype=np.float64)
-
-    common = (
-        np.isfinite(hnu_ev)
-        & (hnu_ev > 0.0)
-        & np.isfinite(u)
-        & (u > 0.0)
-        & np.isfinite(kappa_a)
-        & (kappa_a >= 0.0)
-        & np.isfinite(sc)
-        & (sc >= 0.0)
-    )
-    if np.count_nonzero(common) < 2:
-        raise ValueError("fewer than two valid raw spectral samples")
-
-    hnu_raw = hnu_ev[common]
-    u_raw = u[common]
-    absorption_raw = kappa_a[common]
-    scattering_raw = sc[common]
-
-    order = np.argsort(hnu_raw, kind="mergesort")
-    hnu_raw = hnu_raw[order]
-    u_raw = u_raw[order]
-    absorption_raw = absorption_raw[order]
-    scattering_raw = scattering_raw[order]
-
-    unique = np.concatenate(([True], np.diff(hnu_raw) > 0.0))
-    hnu_raw = hnu_raw[unique]
-    u_raw = u_raw[unique]
-    absorption_raw = absorption_raw[unique]
-    scattering_raw = scattering_raw[unique]
-    if hnu_raw.size < 2:
-        raise ValueError("fewer than two distinct raw photon energies")
-
-    tolerance = 64.0 * np.finfo(np.float64).eps
-    if hnu_edges[0] < hnu_raw[0] * (1.0 - tolerance):
-        raise ValueError("collapse lower edge lies below raw photon-energy range")
-    if hnu_edges[-1] > hnu_raw[-1] * (1.0 + tolerance):
-        raise ValueError("collapse upper edge lies above raw photon-energy range")
-
-    temperature = _infer_temperature_from_hnu_u(hnu_raw, u_raw)
-    n_groups = hnu_edges.size - 1
-
-    low_u = hnu_edges[:-1] / temperature
-    high_u = hnu_edges[1:] / temperature
-    midpoint_u = 0.5 * (low_u + high_u)
-    half_width_u = 0.5 * (high_u - low_u)
-    if np.any(~np.isfinite(half_width_u)) or np.any(half_width_u <= 0.0):
-        raise ValueError("collapse group edges are not strictly increasing")
-
-    u_nodes = (
-        midpoint_u[:, None]
-        + half_width_u[:, None] * EMPTY_BIN_GL_X[None, :]
-    )
-    hnu_nodes = temperature * u_nodes
-
-    absorption = interpolate_nonnegative_log_energy(
-        hnu_nodes.reshape(-1), hnu_raw, absorption_raw
-    ).reshape(n_groups, EMPTY_BIN_QUADRATURE_ORDER)
-    scattering = interpolate_nonnegative_log_energy(
-        hnu_nodes.reshape(-1), hnu_raw, scattering_raw
-    ).reshape(n_groups, EMPTY_BIN_QUADRATURE_ORDER)
-    total = absorption + scattering
-
-    log_gl_weight = np.log(EMPTY_BIN_GL_W)[None, :]
-    log_planck_node_weight = planck_log_weight_u(u_nodes) + log_gl_weight
-    log_rosseland_node_weight = rosseland_log_weight_u(u_nodes) + log_gl_weight
-
-    planck_scaled = _row_scaled_weights(log_planck_node_weight)
-    rosseland_scaled = _row_scaled_weights(log_rosseland_node_weight)
-
-    planck_denominator = np.sum(planck_scaled, axis=1)
-    planck_numerator = np.sum(planck_scaled * absorption, axis=1)
-    planck = planck_numerator / planck_denominator
-    planck[np.all(absorption == 0.0, axis=1)] = 0.0
-
-    def harmonic(opacity: np.ndarray) -> np.ndarray:
-        result = np.empty(n_groups, dtype=np.float64)
-        zero_interval = np.any(opacity == 0.0, axis=1)
-        result[zero_interval] = 0.0
-        positive_rows = ~zero_interval
-        if np.any(positive_rows):
-            numerator = np.sum(rosseland_scaled[positive_rows], axis=1)
-            denominator = np.sum(
-                rosseland_scaled[positive_rows] / opacity[positive_rows], axis=1
-            )
-            result[positive_rows] = numerator / denominator
-        return result
-
-    rosseland_total = harmonic(total)
-    planck_scattering_numerator = np.sum(planck_scaled * scattering, axis=1)
-    planck_scattering = planck_scattering_numerator / planck_denominator
-    planck_scattering[np.all(scattering == 0.0, axis=1)] = 0.0
-
-    chi_safe = np.maximum(total, CHI_MIN)
-    log_transport_node_weight = (
-        log_rosseland_node_weight - np.log(chi_safe)
-    )
-    transport_scaled = _row_scaled_weights(log_transport_node_weight)
-    transport_denominator = np.sum(transport_scaled, axis=1)
-    transport_numerator = np.sum(transport_scaled * absorption, axis=1)
-    rosseland_absorption = transport_numerator / transport_denominator
-    rosseland_absorption[np.all(absorption == 0.0, axis=1)] = 0.0
-
-    log_planck_group_weight = np.empty(n_groups, dtype=np.float64)
-    log_rosseland_group_weight = np.empty(n_groups, dtype=np.float64)
-    for group in range(n_groups):
-        log_planck_group_weight[group] = (
-            math.log(float(half_width_u[group]))
-            + _logsumexp_1d(log_planck_node_weight[group])
-        )
-        log_rosseland_group_weight[group] = (
-            math.log(float(half_width_u[group]))
-            + _logsumexp_1d(log_rosseland_node_weight[group])
-        )
-
-    collapse = {
-        "kplanck_scattering": planck_scattering,
-        "kplanck": planck,
-        "krosseland": rosseland_total,
-        "krosseland_absorption": rosseland_absorption,
-    }
-    for field, values in collapse.items():
-        if np.any(~np.isfinite(values)) or np.any(values < 0.0):
-            raise NonFiniteOutputError(
-                f"{field} contains invalid values after all-group quadrature"
-            )
-    return collapse, log_planck_group_weight, log_rosseland_group_weight
-
-
 def _scaled_group_weights(log_weight: np.ndarray) -> np.ndarray:
     log_weight = np.asarray(log_weight, dtype=np.float64)
     finite = np.isfinite(log_weight)
@@ -1030,74 +684,365 @@ def _regroup_collapse_fields(
     }
 
 
-def _renormalize_collapse_to_integrated_means(
-    collapse: dict[str, np.ndarray],
-    log_planck_group_weight: np.ndarray,
-    log_rosseland_group_weight: np.ndarray,
-    target_means: dict[str, float],
-) -> dict[str, np.ndarray]:
-    """Apply one positive scale per field so regrouping preserves grey means.
+def _sorted_unique_spectrum(
+    hnu_ev: np.ndarray,
+    u: np.ndarray,
+    arrays: dict[str, np.ndarray],
+    hnu_edges: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray], float]:
+    """Return the valid raw samples sorted by energy, plus the temperature."""
+    hnu_ev = np.asarray(hnu_ev, dtype=np.float64)
+    u = np.asarray(u, dtype=np.float64)
+    arrays = {name: np.asarray(values, dtype=np.float64) for name, values in arrays.items()}
+    common = np.isfinite(hnu_ev) & (hnu_ev > 0.0) & np.isfinite(u) & (u > 0.0)
+    for values in arrays.values():
+        common &= np.isfinite(values) & (values >= 0.0)
+    if np.count_nonzero(common) < 2:
+        raise ValueError("fewer than two valid raw spectral samples")
 
-    Multiplying every group of a field by one common positive factor preserves
-    its spectral shape and genuine zero groups.  Planck arithmetic means and Rosseland harmonic means scale by exactly that factor.  Scaling the total
-    Rosseland field changes every absorption transport weight by the same
-    inverse factor, which cancels in the flux-weighted absorption ratio.
+    order = np.argsort(hnu_ev[common], kind="mergesort")
+    hnu_raw = hnu_ev[common][order]
+    u_raw = u[common][order]
+    sorted_arrays = {name: values[common][order] for name, values in arrays.items()}
+    unique = np.concatenate(([True], np.diff(hnu_raw) > 0.0))
+    hnu_raw = hnu_raw[unique]
+    u_raw = u_raw[unique]
+    sorted_arrays = {name: values[unique] for name, values in sorted_arrays.items()}
+    if hnu_raw.size < 2:
+        raise ValueError("fewer than two distinct raw photon energies")
+
+    tolerance = 64.0 * np.finfo(np.float64).eps
+    if hnu_edges[0] < hnu_raw[0] * (1.0 - tolerance):
+        raise ValueError("collapse lower edge lies below raw photon-energy range")
+    if hnu_edges[-1] > hnu_raw[-1] * (1.0 + tolerance):
+        raise ValueError("collapse upper edge lies above raw photon-energy range")
+    temperature = _infer_temperature_from_hnu_u(hnu_raw, u_raw)
+    return hnu_raw, u_raw, sorted_arrays, temperature
+
+
+def _gl_group_log_weights(
+    hnu_edges: np.ndarray,
+    temperature: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return log integral_g W_P du and log integral_g W_R du for every group.
+
+    These are the group weights the browser uses to re-collapse groups
+    (opacity_math.mjs), evaluated with the same 32-point Gauss-Legendre rule.
     """
-    output = {
-        field: np.asarray(values, dtype=np.float64).copy()
-        for field, values in collapse.items()
+    hnu_edges = np.asarray(hnu_edges, dtype=np.float64)
+    low_u = hnu_edges[:-1] / temperature
+    high_u = hnu_edges[1:] / temperature
+    midpoint_u = 0.5 * (low_u + high_u)
+    half_width_u = 0.5 * (high_u - low_u)
+    if np.any(~np.isfinite(half_width_u)) or np.any(half_width_u <= 0.0):
+        raise ValueError("collapse group edges are not strictly increasing")
+    u_nodes = midpoint_u[:, None] + half_width_u[:, None] * EMPTY_BIN_GL_X[None, :]
+    log_gl_weight = np.log(EMPTY_BIN_GL_W)[None, :]
+    log_planck = planck_log_weight_u(u_nodes) + log_gl_weight
+    log_rosseland = rosseland_log_weight_u(u_nodes) + log_gl_weight
+    log_planck_group_weight = np.log(half_width_u) + _row_logsumexp(log_planck)
+    log_rosseland_group_weight = np.log(half_width_u) + _row_logsumexp(log_rosseland)
+    return log_planck_group_weight, log_rosseland_group_weight
+
+
+def _row_logsumexp(values: np.ndarray) -> np.ndarray:
+    maximum = np.max(values, axis=1)
+    return maximum + np.log(np.sum(np.exp(values - maximum[:, None]), axis=1))
+
+
+class NativeGroupQuadrature:
+    """Exact group integrals of the native spectrum.
+
+    The raw samples define a piecewise-linear opacity.  Every group interval is
+    cut at the raw photon energies it contains, and each sub-interval is
+    integrated with SUBINTERVAL_GL_ORDER Gauss-Legendre nodes against the exact
+    Planck or Rosseland weight.  Because the opacity is linear on every
+    sub-interval, the group integrals partition the integral of the native
+    spectrum: no raw sample is skipped, however narrow a line is, and a group
+    narrower than the native spacing gets the interpolated value.  Weights are
+    scaled by their largest logarithm within each group, so exp(-u) factors
+    cancel between numerator and denominator instead of underflowing.
+    """
+
+    def __init__(self, u_raw: np.ndarray, edges_u: np.ndarray) -> None:
+        self.u_raw = np.asarray(u_raw, dtype=np.float64)
+        edges_u = np.asarray(edges_u, dtype=np.float64)
+        self.n_groups = edges_u.size - 1
+        inner = self.u_raw[(self.u_raw > edges_u[0]) & (self.u_raw < edges_u[-1])]
+        points = np.union1d(edges_u, inner)
+        left = points[:-1]
+        right = points[1:]
+        keep = right > left
+        left = left[keep]
+        right = right[keep]
+        midpoint = 0.5 * (left + right)
+        half_width = 0.5 * (right - left)
+        group = np.clip(np.searchsorted(edges_u, midpoint, side="right") - 1, 0, self.n_groups - 1)
+        order = SUBINTERVAL_GL_ORDER
+        self.u_nodes = (midpoint[:, None] + half_width[:, None] * SUBINTERVAL_GL_X[None, :]).reshape(-1)
+        log_quadrature = (np.log(half_width)[:, None] + np.log(SUBINTERVAL_GL_W)[None, :]).reshape(-1)
+        self.node_group = np.repeat(group, order)
+        self.starts = np.searchsorted(self.node_group, np.arange(self.n_groups), side="left")
+        counts = np.diff(np.append(self.starts, self.node_group.size))
+        if np.any(counts <= 0):
+            raise ValueError("a collapse group received no quadrature nodes")
+        self.log_planck = planck_log_weight_u(self.u_nodes) + log_quadrature
+        self.log_rosseland = rosseland_log_weight_u(self.u_nodes) + log_quadrature
+        self.planck_scaled = self._scaled(self.log_planck)
+        self.log_rosseland_sum = self._log_sum(self.log_rosseland)
+        native_counts = np.diff(np.searchsorted(self.u_raw, edges_u, side="left"))
+        self.sub_cell = native_counts == 0
+
+    def _group_max(self, log_values: np.ndarray) -> np.ndarray:
+        return np.maximum.reduceat(log_values, self.starts)
+
+    def _scaled(self, log_values: np.ndarray) -> np.ndarray:
+        return np.exp(log_values - self._group_max(log_values)[self.node_group])
+
+    def _sum(self, values: np.ndarray) -> np.ndarray:
+        return np.add.reduceat(values, self.starts)
+
+    def _log_sum(self, log_values: np.ndarray) -> np.ndarray:
+        maximum = self._group_max(log_values)
+        return maximum + np.log(self._sum(np.exp(log_values - maximum[self.node_group])))
+
+    def interpolate(self, values: np.ndarray) -> np.ndarray:
+        return np.interp(self.u_nodes, self.u_raw, np.asarray(values, dtype=np.float64))
+
+    def planck(self, node_values: np.ndarray) -> np.ndarray:
+        """Group Planck means of an opacity given at the quadrature nodes."""
+        return self._sum(self.planck_scaled * node_values) / self._sum(self.planck_scaled)
+
+    def rosseland(self, chi_nodes: np.ndarray, absorption_nodes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Group harmonic Rosseland means of chi and flux-weighted means of absorption."""
+        log_transport = self.log_rosseland - np.log(np.maximum(chi_nodes, CHI_MIN))
+        transport = self._scaled(log_transport)
+        transport_sum = self._sum(transport)
+        log_transport_sum = self._group_max(log_transport) + np.log(transport_sum)
+        total = np.exp(self.log_rosseland_sum - log_transport_sum)
+        absorption = self._sum(transport * absorption_nodes) / transport_sum
+        return total, absorption
+
+
+@dataclasses.dataclass
+class GroupCollapse:
+    """Group opacities of one (T, rho) cell plus the provenance of every adjustment."""
+
+    fields: dict[str, np.ndarray]
+    planck_flags: np.ndarray
+    rosseland_flags: np.ndarray
+    diagnostics: dict[str, float]
+
+
+def _planck_regroup(values: np.ndarray, log_group_weight: np.ndarray) -> float:
+    weight = _scaled_group_weights(log_group_weight)
+    return float(np.sum(weight * values) / np.sum(weight))
+
+
+def _rosseland_regroup(values: np.ndarray, log_group_weight: np.ndarray) -> float:
+    weight = _scaled_group_weights(log_group_weight)
+    if np.any(values <= 0.0):
+        return 0.0
+    return float(np.sum(weight) / np.sum(weight / values))
+
+
+def _residual_factor(field: str, target: float, reconstructed: float) -> float:
+    """Factor that moves a regrouped mean onto its target; only quadrature-sized factors are accepted."""
+    if not math.isfinite(target) or target < 0.0:
+        raise ValueError(f"invalid integrated target for {field}: {target}")
+    if not math.isfinite(reconstructed) or reconstructed < 0.0:
+        raise ValueError(f"invalid reconstructed mean for {field}: {reconstructed}")
+    if target == 0.0 and reconstructed == 0.0:
+        return 1.0
+    if target == 0.0 or reconstructed == 0.0:
+        raise ValueError(f"{field}: target {target:.6e} but groups reconstruct {reconstructed:.6e}")
+    factor = target / reconstructed
+    if abs(math.log(factor)) > RESIDUAL_LOG_LIMIT:
+        raise ValueError(
+            f"{field}: groups reconstruct {reconstructed:.10e} against target {target:.10e} "
+            f"(factor {factor:.6f} exceeds the quadrature limit)"
+        )
+    return factor
+
+
+def _beyond_tolerance(*factors: float) -> bool:
+    return any(abs(math.log(factor)) > RESIDUAL_LOG_TOLERANCE for factor in factors)
+
+
+def _planck_line_scale(analytic: float, grid: float) -> float:
+    """STAR line Planck mean over the grid line Planck mean (0 or inf when one side is empty)."""
+    if analytic > 0.0:
+        return analytic / grid if grid > 0.0 else math.inf
+    return 0.0 if grid > 0.0 else 1.0
+
+
+def compute_group_collapse_v8(
+    hnu_ev: np.ndarray,
+    u: np.ndarray,
+    bb: np.ndarray,
+    bf: np.ndarray,
+    ff: np.ndarray,
+    sc: np.ndarray,
+    hnu_edges: np.ndarray,
+    target_means: dict[str, float],
+    kplanck_lines: float | None = None,
+    rosseland_point_lines: bool = False,
+    planck_line_array: np.ndarray | None = None,
+    rosseland_line_array: np.ndarray | None = None,
+) -> GroupCollapse:
+    """Collapse one STAR spectrum into groups that reproduce STAR's grey means.
+
+    target_means holds the grey kplanck, krosseland, kplanck_scattering and
+    krosseland_absorption the groups must reproduce.  kplanck_lines is STAR's
+    analytic line Planck mean (kplnk_bb_analytical): STAR's kplanck sums every
+    line strength rather than integrating the grid bb, so only the line part of
+    the groups is rescaled to it; continuum groups are never rescaled by a line
+    correction.  Where the grid holds less than a tenth or more than ten times
+    the line strength, the line placement is unknown: the groups carry the
+    continuum only and the line Planck mean is reported separately.
+    rosseland_point_lines marks spectra whose STAR Rosseland mean used a
+    point-sampled line array that starout.h5 does not store (dilute-LTE); the
+    stored bin-averaged lines are then scaled so the groups reproduce STAR's
+    Rosseland mean.  STAR files written with STAR_WRITE_BB_PLANCK=1 carry
+    planck_line_array (mixspec/bb_planck, every line whole in its centre cell):
+    the Planck line groups then come from it, so line placement is exact.  Files
+    written with STAR_DILUTE_LTE_WRITE_BROS=1 carry rosseland_line_array
+    (mixspec/bb_ros, the lines STAR's Rosseland mean used); their strength is
+    fitted only when the groups miss STAR's Rosseland mean by more than 2%.  Any
+    remaining factor is quadrature-sized: up to 2% silently, up to 30% with the
+    grey_rescaled flag, and larger factors fail.
+    STAR has no flux-weighted absorption mean, so that grey value is the one
+    these groups define and is returned in diagnostics["krosseland_absorption"].
+    """
+    hnu_edges = np.asarray(hnu_edges, dtype=np.float64)
+    spectra = {"bb": bb, "continuum": np.asarray(bf, dtype=np.float64) + np.asarray(ff, dtype=np.float64), "sc": sc}
+    if planck_line_array is not None:
+        spectra["bb_planck"] = planck_line_array
+    use_rosseland_array = rosseland_point_lines and rosseland_line_array is not None
+    if use_rosseland_array:
+        spectra["bb_ros"] = rosseland_line_array
+    _hnu_raw, u_raw, raw, temperature = _sorted_unique_spectrum(hnu_ev, u, spectra, hnu_edges)
+    quadrature = NativeGroupQuadrature(u_raw, hnu_edges / temperature)
+    log_planck_group_weight, log_rosseland_group_weight = _gl_group_log_weights(hnu_edges, temperature)
+    bb_nodes = quadrature.interpolate(raw["bb"])
+    continuum_nodes = quadrature.interpolate(raw["continuum"])
+    sc_nodes = quadrature.interpolate(raw["sc"])
+    planck_bb_nodes = quadrature.interpolate(raw["bb_planck"]) if planck_line_array is not None else bb_nodes
+    rosseland_bb_nodes = quadrature.interpolate(raw["bb_ros"]) if use_rosseland_array else bb_nodes
+
+    planck_lines = quadrature.planck(planck_bb_nodes)
+    planck_continuum = quadrature.planck(continuum_nodes)
+    planck_scattering = quadrature.planck(sc_nodes)
+    grid_lines = _planck_regroup(planck_lines, log_planck_group_weight)
+    grid_continuum = _planck_regroup(planck_continuum, log_planck_group_weight)
+
+    kplanck_target = float(target_means["kplanck"])
+    if kplanck_lines is None or not math.isfinite(kplanck_lines):
+        # No separate line strength: lines and continuum share one quadrature-sized factor.
+        continuum_factor = _residual_factor("kplanck", kplanck_target, grid_lines + grid_continuum)
+        line_scale = continuum_factor
+        star_lines = line_scale * grid_lines
+        unresolved = False
+    else:
+        line_scale = _planck_line_scale(kplanck_lines, grid_lines)
+        star_lines = float(kplanck_lines)
+        unresolved = not (line_scale > 0.0 and abs(math.log(line_scale)) <= LINE_UNRESOLVED_LOG)
+        continuum_factor = _residual_factor(
+            "kplanck continuum", max(kplanck_target - star_lines, 0.0), grid_continuum)
+    kplanck = continuum_factor * planck_continuum
+    if not unresolved:
+        kplanck = kplanck + line_scale * planck_lines
+    unresolved_lines = star_lines if unresolved else 0.0
+
+    scattering_factor = _residual_factor(
+        "kplanck_scattering", float(target_means["kplanck_scattering"]),
+        _planck_regroup(planck_scattering, log_planck_group_weight),
+    )
+
+    def rosseland_groups(scale: float) -> tuple[np.ndarray, np.ndarray]:
+        lines = scale * rosseland_bb_nodes
+        return quadrature.rosseland(lines + continuum_nodes + sc_nodes, lines + continuum_nodes)
+
+    krosseland_target = float(target_means["krosseland"])
+    rosseland_scale = 1.0
+    def grey(scale: float) -> float:
+        return _rosseland_regroup(rosseland_groups(scale)[0], log_rosseland_group_weight)
+
+    # bb_ros holds STAR's own point-sampled lines, but on spiky spectra STAR's Newton-Cotes rule and the exact group
+    # integrals still differ by up to ~15%; the line strength is then fitted as for the bin-averaged lines.
+    fit_rosseland = rosseland_point_lines and (
+        not use_rosseland_array or abs(math.log(krosseland_target / grey(1.0))) > RESIDUAL_LOG_TOLERANCE)
+    if fit_rosseland:
+        without_lines = grey(0.0)
+        if krosseland_target <= without_lines:
+            rosseland_scale = 0.0
+        else:
+            upper = 1.0
+            while grey(upper) < krosseland_target:
+                upper *= 10.0
+                if upper > 1.0e6:
+                    raise ValueError("no line scale reproduces STAR's Rosseland mean")
+            rosseland_scale = float(scipy.optimize.brentq(
+                lambda scale: grey(scale) - krosseland_target, 0.0, upper, xtol=1e-14, rtol=1e-12))
+    krosseland, krosseland_absorption = rosseland_groups(rosseland_scale)
+    rosseland_factor = _residual_factor(
+        "krosseland", krosseland_target, _rosseland_regroup(krosseland, log_rosseland_group_weight))
+    krosseland = rosseland_factor * krosseland
+    # STAR does not compute a flux-weighted absorption mean, so its grey value is defined by these groups;
+    # target_means["krosseland_absorption"] is not used.
+    transport_weight = _scaled_group_weights(log_rosseland_group_weight) / krosseland
+    absorption_target = float(np.sum(transport_weight * krosseland_absorption) / np.sum(transport_weight))
+    absorption_factor = 1.0
+
+    planck_flags = np.zeros(quadrature.n_groups, dtype=np.uint8)
+    rosseland_flags = np.zeros(quadrature.n_groups, dtype=np.uint8)
+    planck_flags[quadrature.sub_cell] |= FLAG_SUB_CELL
+    rosseland_flags[quadrature.sub_cell] |= FLAG_SUB_CELL
+    if _beyond_tolerance(continuum_factor, scattering_factor):
+        planck_flags |= FLAG_GREY_RESCALED
+    if _beyond_tolerance(rosseland_factor):
+        rosseland_flags |= FLAG_GREY_RESCALED
+    if unresolved:
+        if unresolved_lines > LINE_UNRESOLVED_FLAG_FRACTION * kplanck_target:
+            planck_flags |= FLAG_LINES_UNRESOLVED
+    elif abs(math.log(line_scale)) > LINE_ALIASED_LOG:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            line_fraction = np.where(kplanck > 0.0, line_scale * planck_lines / kplanck, 0.0)
+        line_groups = line_fraction > GROUP_LINE_FRACTION_FLAG
+        planck_flags[line_groups] |= FLAG_LINES_ALIASED
+        if abs(math.log(line_scale)) > LINE_ALIASED_X2_LOG:
+            planck_flags[line_groups] |= FLAG_LINES_ALIASED_X2
+    if rosseland_point_lines and rosseland_scale != 1.0:
+        unscaled = rosseland_groups(1.0)[0] * rosseland_factor
+        with np.errstate(invalid="ignore", divide="ignore"):
+            moved = np.abs(np.log(krosseland / unscaled)) > ROSSELAND_RESCALE_FLAG_LOG
+        rosseland_flags[moved] |= FLAG_ROSSELAND_LINES_RESCALED
+
+    fields = {
+        "kplanck_scattering": scattering_factor * planck_scattering,
+        "kplanck": kplanck,
+        "krosseland": krosseland,
+        "krosseland_absorption": krosseland_absorption,
     }
-    reconstructed = _regroup_collapse_fields(
-        output,
-        log_planck_group_weight,
-        log_rosseland_group_weight,
-    )
-
-    for field in (
-        "kplanck",
-        "krosseland",
-        "kplanck_scattering",
-        "krosseland_absorption",
-    ):
-        target = float(target_means[field])
-        current = float(reconstructed[field])
-        if not math.isfinite(target) or target < 0.0:
-            raise ValueError(f"invalid integrated target for {field}: {target}")
-        if not math.isfinite(current) or current < 0.0:
-            raise ValueError(f"invalid reconstructed mean for {field}: {current}")
-
-        if target == 0.0:
-            if current != 0.0:
-                raise ValueError(
-                    f"{field} integrated target is zero but all-group collapse "
-                    f"reconstructs {current:.16e}; refusing to create artificial zeros"
-                )
-            continue
-        if current <= 0.0:
-            raise ValueError(
-                f"{field} integrated target is positive ({target:.16e}) but "
-                "the group collapse reconstructs zero"
-            )
-        scale = target / current
-        if not math.isfinite(scale) or scale <= 0.0:
-            raise ValueError(f"invalid renormalization scale for {field}: {scale}")
-        output[field] *= scale
-
-    verified = _regroup_collapse_fields(
-        output,
-        log_planck_group_weight,
-        log_rosseland_group_weight,
-    )
-    for field, target in target_means.items():
-        target = float(target)
-        actual = float(verified[field])
-        tolerance = 5.0e-13 * max(abs(target), 1.0e-300)
-        if abs(actual - target) > tolerance:
-            raise RuntimeError(
-                f"failed to preserve integrated {field}: "
-                f"target={target:.16e}, reconstructed={actual:.16e}"
-            )
-    return output
+    for field, values in fields.items():
+        if np.any(~np.isfinite(values)) or np.any(values < 0.0):
+            raise NonFiniteOutputError(f"{field} contains invalid group values")
+    diagnostics = {
+        "planck_line_scale": float(line_scale),
+        "planck_line_fraction": float(star_lines / kplanck_target) if kplanck_target > 0.0 else 0.0,
+        "planck_grid_line_fraction": float(grid_lines / (grid_lines + grid_continuum))
+        if grid_lines + grid_continuum > 0.0 else 0.0,
+        "planck_lines_unresolved": float(unresolved_lines),
+        "planck_continuum_factor": float(continuum_factor),
+        "planck_scattering_factor": float(scattering_factor),
+        "rosseland_line_scale": float(rosseland_scale),
+        "rosseland_factor": float(rosseland_factor),
+        "rosseland_absorption_factor": float(absorption_factor),
+        "krosseland_absorption": float(absorption_target),
+        "planck_line_array": float(planck_line_array is not None),
+        "rosseland_line_array": float(use_rosseland_array),
+    }
+    return GroupCollapse(fields, planck_flags, rosseland_flags, diagnostics)
 
 
 def compute_group_collapse(
@@ -1108,24 +1053,14 @@ def compute_group_collapse(
     ff: np.ndarray,
     sc: np.ndarray,
     hnu_edges: np.ndarray,
-    target_means: dict[str, float] | None = None,
+    target_means: dict[str, float],
+    kplanck_lines: float | None = None,
+    rosseland_point_lines: bool = False,
 ) -> dict[str, np.ndarray]:
-    kappa_a = np.asarray(bb, dtype=np.float64) + np.asarray(bf, dtype=np.float64) + np.asarray(ff, dtype=np.float64)
-    collapse, log_planck_weight_group, log_rosseland_weight_group = _all_group_quadrature(
-        hnu_ev,
-        u,
-        kappa_a,
-        sc,
-        hnu_edges,
-    )
-    if target_means is not None:
-        collapse = _renormalize_collapse_to_integrated_means(
-            collapse,
-            log_planck_weight_group,
-            log_rosseland_weight_group,
-            target_means,
-        )
-    return collapse
+    """Group opacities only; see compute_group_collapse_v8."""
+    return compute_group_collapse_v8(
+        hnu_ev, u, bb, bf, ff, sc, hnu_edges, target_means, kplanck_lines, rosseland_point_lines
+    ).fields
 
 def discover_hnu_range(tasks: list[tuple[str, str, str]]) -> tuple[float, float]:
     for _label, _mode, h5_path_text in tasks:
@@ -1213,6 +1148,13 @@ def process_run(task: tuple[str, str, str, np.ndarray | None]) -> dict[str, obje
             rho_gcc = scalar_dataset(h5, ("rho",))
             kplanck = scalar_dataset(scalar_group, ("kplnk",))
             krosseland = scalar_dataset(scalar_group, ("kros",))
+            kplanck_lines = scalar_dataset(scalar_group, ("kplnk_bb_analytical",))
+            planck_line_array = (np.asarray(scalar_group["bb_planck"][:], dtype=np.float64)
+                                 if "bb_planck" in scalar_group else None)
+            rosseland_line_array = (np.asarray(scalar_group["bb_ros"][:], dtype=np.float64)
+                                    if "bb_ros" in scalar_group else None)
+            haze = scalar_dataset(scalar_group, ("rosseland_line_haze_active",))
+            rosseland_point_lines = math.isfinite(haze) and haze > 0.0
             if not math.isfinite(kplanck):
                 kplanck = scalar_dataset(h5, ("kplnk",))
             if not math.isfinite(krosseland):
@@ -1224,8 +1166,10 @@ def process_run(task: tuple[str, str, str, np.ndarray | None]) -> dict[str, obje
         kplanck_scattering = planck_mean(u, sc)
         kross_absorption = rosseland_flux_weighted_absorption(u, rosw, kappa_a, chi)
         group_collapse = None
+        group_flags = None
+        collapse_diagnostics = None
         if hnu_edges is not None:
-            group_collapse = compute_group_collapse(
+            result = compute_group_collapse_v8(
                 hnu_ev,
                 u,
                 bb,
@@ -1239,7 +1183,15 @@ def process_run(task: tuple[str, str, str, np.ndarray | None]) -> dict[str, obje
                     "kplanck_scattering": kplanck_scattering,
                     "krosseland_absorption": kross_absorption,
                 },
+                kplanck_lines=kplanck_lines if math.isfinite(kplanck_lines) else None,
+                rosseland_point_lines=rosseland_point_lines,
+                planck_line_array=planck_line_array,
+                rosseland_line_array=rosseland_line_array,
             )
+            group_collapse = result.fields
+            group_flags = {"planck_flags": result.planck_flags, "rosseland_flags": result.rosseland_flags}
+            collapse_diagnostics = result.diagnostics
+            kross_absorption = result.diagnostics["krosseland_absorption"]
 
         if (
             not math.isfinite(kplanck)
@@ -1265,6 +1217,8 @@ def process_run(task: tuple[str, str, str, np.ndarray | None]) -> dict[str, obje
                 "krosseland": krosseland,
                 "krosseland_absorption": kross_absorption,
                 "group_collapse": group_collapse,
+                "group_flags": group_flags,
+                "collapse_diagnostics": collapse_diagnostics,
                 "status": "ok",
             }
         )
@@ -1327,6 +1281,56 @@ def build_group_collapse_grid(
     return grid
 
 
+COLLAPSE_DIAGNOSTICS = (
+    "planck_line_scale",
+    "planck_line_fraction",
+    "planck_grid_line_fraction",
+    "planck_lines_unresolved",
+    "planck_continuum_factor",
+    "planck_scattering_factor",
+    "rosseland_line_scale",
+    "rosseland_factor",
+    "planck_line_array",
+    "rosseland_line_array",
+)
+COLLAPSE_FLAG_ARRAYS = ("planck_flags", "rosseland_flags")
+
+
+def build_group_flag_grid(
+    records: list[dict[str, object]],
+    temps: list[float],
+    rhos: list[float],
+    name: str,
+    n_groups: int,
+) -> np.ndarray:
+    grid = np.zeros((n_groups, len(rhos), len(temps)), dtype=np.uint8)
+    for record in records:
+        flags = record.get("group_flags")
+        if record.get("status") != "ok" or not isinstance(flags, dict):
+            continue
+        i_rho = nearest_index(rhos, float(record["rho_gcc"]))
+        j_temp = nearest_index(temps, float(record["temp_eV"]))
+        grid[:, i_rho, j_temp] = np.asarray(flags[name], dtype=np.uint8)
+    return grid
+
+
+def build_diagnostic_grid(
+    records: list[dict[str, object]],
+    temps: list[float],
+    rhos: list[float],
+    name: str,
+) -> np.ndarray:
+    grid = np.full((len(rhos), len(temps)), np.nan, dtype=np.float64)
+    for record in records:
+        diagnostics = record.get("collapse_diagnostics")
+        if record.get("status") != "ok" or not isinstance(diagnostics, dict):
+            continue
+        i_rho = nearest_index(rhos, float(record["rho_gcc"]))
+        j_temp = nearest_index(temps, float(record["temp_eV"]))
+        grid[i_rho, j_temp] = float(diagnostics[name])
+    return grid
+
+
 def write_group_collapse_index(
     path: Path,
     hnu_centers: np.ndarray,
@@ -1385,6 +1389,10 @@ def write_group_collapse_outputs(
         collapse_grids=collapse_grids,
         hnu_edges=hnu_edges,
     )
+    for name in COLLAPSE_FLAG_ARRAYS:
+        npz_payload[name] = build_group_flag_grid(records, temps, rhos, name, n_groups)
+    for name in COLLAPSE_DIAGNOSTICS:
+        npz_payload[name] = build_diagnostic_grid(records, temps, rhos, name)
 
     for field, stem in COLLAPSE_FIELDS:
         grid = collapse_grids[field]
@@ -1410,6 +1418,16 @@ def write_group_collapse_outputs(
         "shape": [n_groups, len(rhos), len(temps)],
         "axis_order": "group,rho,temp",
         "fields": [field for field, _stem in COLLAPSE_FIELDS],
+        "flag_arrays": list(COLLAPSE_FLAG_ARRAYS),
+        "flag_bits": {
+            "lines_aliased": FLAG_LINES_ALIASED,
+            "lines_aliased_x2": FLAG_LINES_ALIASED_X2,
+            "lines_unresolved": FLAG_LINES_UNRESOLVED,
+            "rosseland_lines_rescaled": FLAG_ROSSELAND_LINES_RESCALED,
+            "sub_cell": FLAG_SUB_CELL,
+            "grey_rescaled": FLAG_GREY_RESCALED,
+        },
+        "cell_diagnostics": list(COLLAPSE_DIAGNOSTICS),
     }
     (collapse_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",

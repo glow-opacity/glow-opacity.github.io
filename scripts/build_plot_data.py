@@ -36,6 +36,16 @@ FIELDS = (
     "kplanck_scattering",
 )
 ROSS_C = 15.0 / (4.0 * math.pi**4)
+FLAG_ARRAYS = ("planck_flags", "rosseland_flags")
+# Bits of each flag array that apply to each field (matches build_web_data.FIELD_FLAGS).
+FIELD_FLAGS = {
+    "kplanck": ("planck_flags", 1 | 2 | 4 | 16 | 32),
+    "kplanck_scattering": ("planck_flags", 16 | 32),
+    "krosseland": ("rosseland_flags", 8 | 16 | 32),
+    "krosseland_absorption": ("rosseland_flags", 8 | 16 | 32),
+}
+# Cell-level quality ignores sub_cell (bit 16): it marks groups narrower than STAR's grid, not a defect of the cell.
+CELL_FLAG_MASK = 1 | 2 | 4 | 8 | 32
 BROWSER_DTYPES = {
     "float32": np.dtype("<f4"),
     "float64": np.dtype("<f8"),
@@ -118,6 +128,7 @@ def load_parts(parts_dir: Path, pattern: str):
     rho = None
     temperatures = []
     field_parts = {field: [] for field in FIELDS}
+    extra_parts = {name: [] for name in (*FLAG_ARRAYS, "planck_lines_unresolved")}
 
     for path in paths:
         with np.load(path, allow_pickle=False) as data:
@@ -150,6 +161,9 @@ def load_parts(parts_dir: Path, pattern: str):
                 if np.any(values < 0.0) or np.any(~np.isfinite(values)):
                     raise ValueError(f"{path.name}:{field} contains invalid values")
                 field_parts[field].append(values)
+            for name in extra_parts:
+                if name in data.files:
+                    extra_parts[name].append(np.asarray(data[name]))
 
     assert edges is not None and rho is not None
     temp = np.concatenate(temperatures)
@@ -157,6 +171,11 @@ def load_parts(parts_dir: Path, pattern: str):
         field: np.concatenate(parts, axis=2)
         for field, parts in field_parts.items()
     }
+    for name, parts in extra_parts.items():
+        if len(parts) == len(paths):
+            fields[name] = np.concatenate(parts, axis=parts[0].ndim - 1)
+        elif parts:
+            raise ValueError(f"{name} is present in only some parts")
     return edges, rho, temp, fields
 
 
@@ -281,8 +300,20 @@ def main() -> int:
         ),
     }
 
+    # Line Planck strength the groups could not place (lines unresolved on STAR's grid) belongs to the grey mean.
+    unresolved = fields.get("planck_lines_unresolved")
+    if unresolved is not None:
+        grey["kplanck"] = grey["kplanck"] + np.nan_to_num(unresolved, nan=0.0)
+
     output_dir = args.web_data_dir.resolve() / "plot"
     output_dir.mkdir(parents=True, exist_ok=True)
+    quality_fields = {}
+    if all(name in fields for name in FLAG_ARRAYS):
+        for field, (name, mask) in FIELD_FLAGS.items():
+            cell_flags = np.bitwise_or.reduce(fields[name] & (mask & CELL_FLAG_MASK), axis=0).astype(np.uint8)
+            metadata = write_gzip_values(output_dir / f"{field}_quality.u8.gz", cell_flags, np.dtype("u1"), args.gzip_level)
+            metadata["flagged_cells"] = int(np.count_nonzero(cell_flags))
+            quality_fields[field] = metadata
     manifest_fields = {}
     for field in FIELDS:
         values = grey[field]
@@ -317,6 +348,8 @@ def main() -> int:
         },
         "axis_order": ["rho", "temp"],
         "fields": manifest_fields,
+        "quality": quality_fields or None,
+        "kplanck_includes_unresolved_lines": unresolved is not None,
     }
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",

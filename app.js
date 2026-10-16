@@ -240,7 +240,9 @@ function decodeOpacityArray(buffer, metadata) {
     ? Float32Array
     : dtype === 'float64-le'
       ? Float64Array
-      : null;
+      : dtype === 'uint8-le'
+        ? Uint8Array
+        : null;
   if (!ArrayType) throw new Error(`Unsupported opacity data type: ${dtype}.`);
 
   const expectedValues = metadata.shape.reduce((product, size) => product * size, 1);
@@ -317,6 +319,58 @@ function findChunkInfo(part, field, groupIndex) {
     throw new Error(`No ${field} chunk in part ${part.part_index} contains group ${groupIndex}.`);
   }
   return chunk;
+}
+
+// Quality flags: per-group bits written by the table generator.  Each field reads one flag
+// array (manifest.quality_flags.fields[field]) restricted to the bits that apply to it.
+function fieldQualityInfo(field) {
+  return state.manifest?.quality_flags?.fields?.[field] ?? null;
+}
+
+function findFlagChunkInfo(part, arrayName, groupIndex) {
+  return (part.flag_chunks ?? []).find((candidate) => (
+    candidate.flags === arrayName &&
+    groupIndex >= candidate.group_start &&
+    groupIndex < candidate.group_stop
+  )) ?? null;
+}
+
+function readNativeQuality(loadedChunks, field, groupIndex, globalTemperatureIndex, densityIndex) {
+  const info = fieldQualityInfo(field);
+  if (!info) return 0;
+  const part = findTemperaturePart(globalTemperatureIndex);
+  const chunkInfo = findFlagChunkInfo(part, info.array, groupIndex);
+  if (!chunkInfo) throw new Error(`No ${info.array} chunk in part ${part.part_index} contains group ${groupIndex}.`);
+  const values = loadedChunks.get(chunkInfo.file);
+  if (!values) throw new Error(`Required chunk ${chunkInfo.file} was not loaded.`);
+  const localGroup = groupIndex - chunkInfo.group_start;
+  const localTemperature = globalTemperatureIndex - part.temperature_global_start;
+  const flatIndex = (
+    (localGroup * chunkInfo.shape[1] + densityIndex) * chunkInfo.shape[2] + localTemperature
+  );
+  return values[flatIndex] & info.mask;
+}
+
+function stencilQuality(readQuality, temperatureBracket, densityBracket) {
+  const temperatures = temperatureBracket.lowerIndex === temperatureBracket.upperIndex
+    ? [temperatureBracket.lowerIndex]
+    : [temperatureBracket.lowerIndex, temperatureBracket.upperIndex];
+  const densities = densityBracket.lowerIndex === densityBracket.upperIndex
+    ? [densityBracket.lowerIndex]
+    : [densityBracket.lowerIndex, densityBracket.upperIndex];
+  let bits = 0;
+  for (const temperatureIndex of temperatures) {
+    for (const densityIndex of densities) bits |= readQuality(temperatureIndex, densityIndex);
+  }
+  return bits;
+}
+
+function describeQuality(bits) {
+  if (!bits) return '';
+  const names = Object.entries(state.manifest?.quality_flags?.bits ?? {})
+    .filter(([, bit]) => bits & bit)
+    .map(([name]) => name);
+  return names.join('+');
 }
 
 function updateModePanels() {
@@ -452,11 +506,15 @@ function uniqueRequiredChunks(field, temperatureBrackets, energy) {
     parts.set(part.part_index, part);
   }
 
+  const flagArrays = new Set(
+    [...requiredFields].map((name) => fieldQualityInfo(name)?.array).filter(Boolean),
+  );
   const chunks = new Map();
   for (const part of parts.values()) {
-    for (const chunk of part.chunks) {
+    for (const chunk of [...part.chunks, ...(part.flag_chunks ?? [])]) {
+      const wanted = chunk.flags ? flagArrays.has(chunk.flags) : requiredFields.has(chunk.field);
       if (
-        requiredFields.has(chunk.field) &&
+        wanted &&
         chunk.group_stop > energy.nativeGroupStart &&
         chunk.group_start < energy.nativeGroupStopExclusive
       ) {
@@ -568,8 +626,14 @@ function buildInterpolatedNativeSpectrum(
   const stop = query.energy.nativeGroupStopExclusive;
   const values = new Float64Array(stop - start);
   const statuses = new Array(stop - start);
+  const quality = new Uint8Array(stop - start);
 
   for (let group = start; group < stop; group += 1) {
+    quality[group - start] = stencilQuality(
+      (globalTIndex, rhoIndex) => readNativeQuality(loadedChunks, field, group, globalTIndex, rhoIndex),
+      tBracket,
+      rhoBracket,
+    );
     const result = interpolateOpacityLogLog(
       (globalTIndex, rhoIndex) => readNativeValue(
         query,
@@ -585,7 +649,7 @@ function buildInterpolatedNativeSpectrum(
     values[group - start] = result.value;
     statuses[group - start] = result.status;
   }
-  return { values, statuses };
+  return { values, statuses, quality };
 }
 
 function getCollapsePlan(query, temperature) {
@@ -610,6 +674,7 @@ function outputForSpectrum(query, nativeSpectrum, totalSpectrum, temperature) {
     return Array.from(nativeSpectrum.values, (value, index) => ({
       value,
       status: nativeSpectrum.statuses[index],
+      quality: nativeSpectrum.quality[index],
     }));
   }
   const options = COLLAPSE_KIND[query.field] === 'rosseland_absorption'
@@ -618,17 +683,18 @@ function outputForSpectrum(query, nativeSpectrum, totalSpectrum, temperature) {
       totalStatus: totalSpectrum.statuses,
     }
     : {};
-  return applyCollapsePlan(
-    getCollapsePlan(query, temperature),
-    nativeSpectrum.values,
-    nativeSpectrum.statuses,
-    options,
-  );
+  const plan = getCollapsePlan(query, temperature);
+  const results = applyCollapsePlan(plan, nativeSpectrum.values, nativeSpectrum.statuses, options);
+  return results.map((result, index) => ({
+    ...result,
+    quality: plan.bins[index].terms.reduce((bits, term) => bits | nativeSpectrum.quality[term.nativeIndex], 0),
+  }));
 }
 
 function forEachResult(query, loadedChunks, callback, limit = Number.POSITIVE_INFINITY) {
   let emitted = 0;
   let warningCount = 0;
+  let flaggedCount = 0;
 
   for (let ti = 0; ti < query.temperatures.length; ti += 1) {
     const temperature = query.temperatures[ti];
@@ -645,6 +711,7 @@ function forEachResult(query, loadedChunks, callback, limit = Number.POSITIVE_IN
       for (let group = 0; group < output.length; group += 1) {
         const item = output[group];
         if (item.status !== 'ok' && item.status !== 'ok_zero') warningCount += 1;
+        if (item.quality) flaggedCount += 1;
         callback({
           temperature,
           density,
@@ -653,16 +720,19 @@ function forEachResult(query, loadedChunks, callback, limit = Number.POSITIVE_IN
           energyHigh: query.energy.outputEdges[group + 1],
           opacity: item.value,
           status: item.status,
+          quality: describeQuality(item.quality),
         });
         emitted += 1;
-        if (emitted >= limit) return { emitted, warningCount, truncated: emitted < query.rowCount };
+        if (emitted >= limit) {
+          return { emitted, warningCount, flaggedCount, truncated: emitted < query.rowCount };
+        }
       }
     }
   }
-  return { emitted, warningCount, truncated: false };
+  return { emitted, warningCount, flaggedCount, truncated: false };
 }
 
-function renderPreview(rows, query, warningCount) {
+function renderPreview(rows, query, warningCount, flaggedCount = 0) {
   elements.previewBody.replaceChildren();
   const fragment = document.createDocumentFragment();
   for (const row of rows) {
@@ -675,6 +745,7 @@ function renderPreview(rows, query, warningCount) {
       formatScientific(row.energyHigh),
       formatScientific(row.opacity),
       row.status,
+      row.quality || '—',
     ];
     for (const value of values) {
       const td = document.createElement('td');
@@ -688,7 +759,7 @@ function renderPreview(rows, query, warningCount) {
   elements.previewTemperatureHeading.textContent = `Temperature [${temperatureUnitLabel(query.temperatureOutputUnit)}]`;
   elements.previewDescription.textContent = (
     `${label}: ${query.rowCount.toLocaleString()} values; ` +
-    `${warningCount.toLocaleString()} warnings in the displayed rows.`
+    `${warningCount.toLocaleString()} warnings and ${flaggedCount.toLocaleString()} quality flags in the displayed rows.`
   );
   elements.previewLimit.textContent = rows.length < query.rowCount
     ? `Showing ${rows.length.toLocaleString()} of ${query.rowCount.toLocaleString()}`
@@ -710,13 +781,27 @@ async function previewSelection() {
       (row) => rows.push(row),
       PREVIEW_ROW_LIMIT,
     );
-    renderPreview(rows, query, result.warningCount);
+    renderPreview(rows, query, result.warningCount, result.flaggedCount);
   } catch (error) {
     showError(error.message);
   } finally {
     setBusy(false);
   }
 }
+
+const QUALITY_HEADER_LINES = [
+  '# quality: flags of the 1024-group values used for each row (none if unflagged)',
+  '#   lines_aliased: STAR\'s frequency grid holds a line strength that differs from STAR\'s line Planck sum by >10%;',
+  '#     line-dominated groups were rescaled to that sum, but which group each line falls in is uncertain',
+  '#   lines_aliased_x2: as lines_aliased, with the difference exceeding a factor of 2',
+  '#   lines_unresolved: the grid holds <1/10 or >10x the line strength; groups carry the continuum only and the',
+  '#     line contribution is included in the grey Planck mean but not in any group',
+  '#   rosseland_lines_rescaled: STAR\'s Rosseland mean used point-sampled lines that are not stored; the stored',
+  '#     bin-averaged lines were scaled to reproduce STAR\'s grey Rosseland mean, so the line blocking per group is approximate',
+  '#   sub_cell: the group is narrower than STAR\'s frequency grid spacing (value interpolated)',
+  '#   grey_rescaled: all groups of this cell were scaled by 2-30% so that they reproduce STAR\'s grey mean',
+  '#     (STAR\'s quadrature and the exact group integrals differ on spiky spectra)',
+];
 
 function createTextHeader(query, warningCount) {
   const metadata = state.manifest.field_metadata[query.field];
@@ -746,9 +831,10 @@ function createTextHeader(query, warningCount) {
     `# density_count: ${query.densities.length}`,
     `# output_group_count: ${query.energy.outputBinCount}`,
     `# warning_count: ${warningCount}`,
+    ...QUALITY_HEADER_LINES,
     '#',
     '# Columns:',
-    `# temperature_${query.temperatureOutputUnit === 'K' ? 'K' : 'eV'} density_g_cm-3 output_group_index energy_low_eV energy_high_eV opacity_cm2_g-1 status`,
+    `# temperature_${query.temperatureOutputUnit === 'K' ? 'K' : 'eV'} density_g_cm-3 output_group_index energy_low_eV energy_high_eV opacity_cm2_g-1 status quality`,
     '',
   ].join('\n');
 }
@@ -772,6 +858,7 @@ async function downloadSelection() {
         row.energyHigh.toExponential(16),
         Number.isFinite(row.opacity) ? row.opacity.toExponential(16) : 'nan',
         row.status,
+        row.quality || 'none',
       ].join(' '));
       if (lines.length >= batchSize) {
         batches.push(`${lines.join('\n')}\n`);
@@ -1061,12 +1148,38 @@ function updatePlotSummary() {
   }
 }
 
+async function loadPlotQuality(field) {
+  const info = state.plotManifest?.quality?.[field];
+  if (!info) return null;
+  if (state.plotCache.has(info.file)) return state.plotCache.get(info.file);
+  const promise = (async () => {
+    const url = datasetUrl(`plot/${info.file}`);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Could not load ${url}: HTTP ${response.status}`);
+    return decodeOpacityArray(await decompressGzip(response), info);
+  })();
+  state.plotCache.set(info.file, promise);
+  try {
+    return await promise;
+  } catch (error) {
+    state.plotCache.delete(info.file);
+    throw error;
+  }
+}
+
 function readGreyValue(values, rhoIndex, temperatureIndex) {
   const temperatureCount = state.axes.temp_eV.length;
   return values[rhoIndex * temperatureCount + temperatureIndex];
 }
 
-function integratedPlotPoints(definition, values) {
+function integratedPlotPoints(definition, values, quality = null) {
+  const greyQuality = (temperatureBracket, densityBracket) => (quality
+    ? describeQuality(stencilQuality(
+      (temperatureIndex, rhoIndex) => readGreyValue(quality, rhoIndex, temperatureIndex),
+      temperatureBracket,
+      densityBracket,
+    ))
+    : '');
   const points = [];
   if (definition.sweep === 'temperature') {
     const densityBracket = findLogBracket(
@@ -1088,6 +1201,7 @@ function integratedPlotPoints(definition, values) {
         x: glowTemperatureFromEv(state.axes.temp_eV[ti], definition.temperatureUnit),
         y: result.value,
         status: result.status,
+        quality: greyQuality(temperatureBracket, densityBracket),
       });
     }
   } else {
@@ -1106,7 +1220,12 @@ function integratedPlotPoints(definition, values) {
         temperatureBracket,
         densityBracket,
       );
-      points.push({ x: state.axes.rho_gcc[ri], y: result.value, status: result.status });
+      points.push({
+        x: state.axes.rho_gcc[ri],
+        y: result.value,
+        status: result.status,
+        quality: greyQuality(temperatureBracket, densityBracket),
+      });
     }
   }
   return points;
@@ -1122,6 +1241,7 @@ async function specificGroupPlotPoints(definition) {
         : row.density,
       y: row.opacity,
       status: row.status,
+      quality: row.quality,
     });
   });
   return points;
@@ -1134,6 +1254,7 @@ async function spectrumPlotPoints(definition) {
   const spectrum = {
     values: new Float64Array(stop - start),
     statuses: new Array(stop - start),
+    quality: new Uint8Array(stop - start),
   };
   let loadedCompressedBytes = 0;
   let completedBatches = 0;
@@ -1165,6 +1286,13 @@ async function spectrumPlotPoints(definition) {
         );
         spectrum.values[group - start] = result.value;
         spectrum.statuses[group - start] = result.status;
+        spectrum.quality[group - start] = stencilQuality(
+          (temperatureIndex, densityIndex) => readNativeQuality(
+            loadedChunks, definition.field, group, temperatureIndex, densityIndex,
+          ),
+          temperatureBracket,
+          densityBracket,
+        );
       }
 
       loadedCompressedBytes += chunkValues.reduce(
@@ -1185,7 +1313,7 @@ async function spectrumPlotPoints(definition) {
     state.axes.hnu_ev_edges,
     definition.spectralUnit,
     GLOW_HZ_PER_EV,
-  );
+  ).map((point, index) => ({ ...point, quality: describeQuality(spectrum.quality[index]) }));
 }
 
 function svgElement(name, attributes = {}, text = '') {
@@ -1319,12 +1447,13 @@ function renderLinePlot(definition, points) {
       cx: xProject(point.x),
       cy: yProject(point.y),
       r: definition.sweep === 'frequency' ? 1.8 : 2.6,
-      class: 'plot-data-point',
+      class: point.quality ? 'plot-data-point plot-data-point-flagged' : 'plot-data-point',
     });
     const title = definition.sweep === 'frequency'
       ? `group=${point.group}; energy=[${point.energyLow.toExponential(8)}, ${point.energyHigh.toExponential(8)}] eV; x=${point.x.toExponential(8)}; opacity=${point.y.toExponential(8)}; status=${point.status}`
       : `x=${point.x.toExponential(8)}; opacity=${point.y.toExponential(8)}; status=${point.status}`;
-    circle.append(svgElement('title', {}, title));
+    const qualityText = point.quality ? `; quality=${point.quality}` : '';
+    circle.append(svgElement('title', {}, title + qualityText));
     svg.append(circle);
   }
 
@@ -1366,15 +1495,19 @@ function renderLinePlot(definition, points) {
 
   const omitted = points.length - drawable.length;
   const warnings = points.filter((point) => point.status !== 'ok' && point.status !== 'ok_zero').length;
+  const flagged = points.filter((point) => point.quality).length;
+  const flaggedNote = flagged > 0
+    ? ` ${flagged} points carry quality flags (hollow markers; hover for details, see Methods).`
+    : '';
   elements.plotWarningBadge.textContent = `${drawable.length} plotted; ${omitted} omitted`;
   if (logY) {
     elements.plotZeroNote.textContent = omitted > 0
-      ? `${omitted} zero, non-finite, negative, or invalid points cannot be represented on a logarithmic y-axis and are shown as gaps. ${warnings} points had interpolation warnings.`
-      : `${warnings} points had interpolation warnings.`;
+      ? `${omitted} zero, non-finite, negative, or invalid points cannot be represented on a logarithmic y-axis and are shown as gaps. ${warnings} points had interpolation warnings.${flaggedNote}`
+      : `${warnings} points had interpolation warnings.${flaggedNote}`;
   } else {
     elements.plotZeroNote.textContent = omitted > 0
-      ? `${omitted} non-finite, negative, or invalid points are shown as gaps. Zero opacities are displayed on the linear y-axis. ${warnings} points had interpolation warnings.`
-      : `Zero opacities are displayed normally on the linear y-axis. ${warnings} points had interpolation warnings.`;
+      ? `${omitted} non-finite, negative, or invalid points are shown as gaps. Zero opacities are displayed on the linear y-axis. ${warnings} points had interpolation warnings.${flaggedNote}`
+      : `Zero opacities are displayed normally on the linear y-axis. ${warnings} points had interpolation warnings.${flaggedNote}`;
   }
   elements.plotSection.hidden = false;
   elements.plotSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1390,6 +1523,7 @@ async function drawPlot() {
       integrated: async (plotDefinition) => integratedPlotPoints(
         plotDefinition,
         await loadPlotField(plotDefinition.field),
+        await loadPlotQuality(plotDefinition.field),
       ),
       specificGroup: specificGroupPlotPoints,
     });
@@ -1413,14 +1547,15 @@ function downloadPlotCsv() {
       : (definition.spectralUnit === 'Hz' ? 'frequency_Hz' : 'photon_energy_eV');
   const spectrumMode = definition.sweep === 'frequency';
   const columnHeader = spectrumMode
-    ? `${xName},group_index,energy_low_eV,energy_high_eV,opacity_cm2_g-1,status`
-    : `${xName},opacity_cm2_g-1,status`;
+    ? `${xName},group_index,energy_low_eV,energy_high_eV,opacity_cm2_g-1,status,quality`
+    : `${xName},opacity_cm2_g-1,status,quality`;
   const lines = [
     '# GLOW line plot',
     `# field: ${definition.field}`,
     `# energy: ${definition.energyLabel}`,
     `# x_axis: ${xName}`,
     `# y_axis: opacity_cm2_g-1 (${elements.plotLogY.checked ? 'log display' : 'linear display'})`,
+    ...QUALITY_HEADER_LINES,
     columnHeader,
   ];
   for (const point of points) {
@@ -1432,11 +1567,13 @@ function downloadPlotCsv() {
         point.energyHigh.toExponential(16),
         Number.isFinite(point.y) ? point.y.toExponential(16) : 'nan',
         point.status,
+        point.quality || 'none',
       ]
       : [
         point.x.toExponential(16),
         Number.isFinite(point.y) ? point.y.toExponential(16) : 'nan',
         point.status,
+        point.quality || 'none',
       ];
     lines.push(values.join(','));
   }

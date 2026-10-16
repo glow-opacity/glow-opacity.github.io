@@ -14,11 +14,11 @@
         "rho",
         "temp"
       ],
-      "compressed_bytes": 63872,
+      "compressed_bytes": 63876,
       "dtype": "float32-le",
       "file": "kplanck_grey.f64.gz",
       "positive_count": 16384,
-      "sha256": "eee7755519f57f8658527288e4f46d11a536cf00975b62c1e342a6315bed74a5",
+      "sha256": "ad4d81e804f3e02a7f9192da5ee36776e253e2398c36a1dc1d388d4190297903",
       "shape": [
         128,
         128
@@ -48,11 +48,11 @@
         "rho",
         "temp"
       ],
-      "compressed_bytes": 42009,
+      "compressed_bytes": 42003,
       "dtype": "float32-le",
       "file": "krosseland_grey.f64.gz",
       "positive_count": 16384,
-      "sha256": "ce5c82dc7f1d8d296ee362226fb3d89478a7fab79aa5950aecc05cf71ba848b2",
+      "sha256": "799ccd1bda6884cd73b36f161a48b51315feb543aba711cf7e4a64a733ca32a1",
       "shape": [
         128,
         128
@@ -65,11 +65,11 @@
         "rho",
         "temp"
       ],
-      "compressed_bytes": 63757,
+      "compressed_bytes": 63732,
       "dtype": "float32-le",
       "file": "krosseland_absorption_grey.f64.gz",
       "positive_count": 16384,
-      "sha256": "3385a43bae38f67eac644ba36de11871fc7b37a13c807c49bc37f10e9aae0f5c",
+      "sha256": "18134fa5617496abc2e14e03c08c030e52cc8c7b90c88607c71530adf74a3c81",
       "shape": [
         128,
         128
@@ -78,7 +78,74 @@
       "zero_count": 0
     }
   },
+  "kplanck_includes_unresolved_lines": true,
   "quadrature_order": 32,
+  "quality": {
+    "kplanck": {
+      "axis_order": [
+        "rho",
+        "temp"
+      ],
+      "compressed_bytes": 78,
+      "dtype": "uint8-le",
+      "file": "kplanck_quality.u8.gz",
+      "flagged_cells": 2,
+      "sha256": "678bd156f8c2caa445f0939e52d9a52a3a5d0f0d9214db2053be577a1a5cb75c",
+      "shape": [
+        128,
+        128
+      ],
+      "uncompressed_bytes": 16384
+    },
+    "kplanck_scattering": {
+      "axis_order": [
+        "rho",
+        "temp"
+      ],
+      "compressed_bytes": 89,
+      "dtype": "uint8-le",
+      "file": "kplanck_scattering_quality.u8.gz",
+      "flagged_cells": 2,
+      "sha256": "cf031c8e4d3ce259ce03b18bc31b78728d88b6c439b8977b418b27ebe6e28a41",
+      "shape": [
+        128,
+        128
+      ],
+      "uncompressed_bytes": 16384
+    },
+    "krosseland": {
+      "axis_order": [
+        "rho",
+        "temp"
+      ],
+      "compressed_bytes": 237,
+      "dtype": "uint8-le",
+      "file": "krosseland_quality.u8.gz",
+      "flagged_cells": 2171,
+      "sha256": "bd85f81f4bd8431a01f39acba4853607d42fa56845530bee8cb1afee3fe71f36",
+      "shape": [
+        128,
+        128
+      ],
+      "uncompressed_bytes": 16384
+    },
+    "krosseland_absorption": {
+      "axis_order": [
+        "rho",
+        "temp"
+      ],
+      "compressed_bytes": 248,
+      "dtype": "uint8-le",
+      "file": "krosseland_absorption_quality.u8.gz",
+      "flagged_cells": 2171,
+      "sha256": "9899fe8924a84ee3e9d8f863078213c1f2a6304dd4b83ac85efef43dd0648fe7",
+      "shape": [
+        128,
+        128
+      ],
+      "uncompressed_bytes": 16384
+    }
+  },
   "source_groups": 1024,
   "version": 1
 }

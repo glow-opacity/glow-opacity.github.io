@@ -31,7 +31,7 @@ def main() -> None:
 
     for entry in entries:
         expected_data_root = (
-            "https://raw.githubusercontent.com/eladtan/GLOW/main/tables/"
+            "https://raw.githubusercontent.com/glow-opacity/glow-opacity.github.io/main/tables/"
             f"{entry['id']}/web_data"
         )
         assert entry["data_root"] == expected_data_root

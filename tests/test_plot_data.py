@@ -44,6 +44,12 @@ def main() -> None:
                     value,
                     dtype=np.float64,
                 )
+            payload['planck_lines_unresolved'] = np.zeros((rho.size, stop - start))
+            payload['planck_flags'] = np.zeros((edges.size - 1, rho.size, stop - start), dtype=np.uint8)
+            payload['rosseland_flags'] = np.zeros((edges.size - 1, rho.size, stop - start), dtype=np.uint8)
+            if part == 1:
+                payload['planck_lines_unresolved'][0, 1] = 0.75
+                payload['planck_flags'][:, 0, 1] = 4 | 16
             np.savez_compressed(
                 parts / f'opacity_group_collapse_part{part:02d}.npz',
                 **payload,
@@ -74,7 +80,17 @@ def main() -> None:
             assert info['dtype'] == 'float32-le'
             with gzip.open(plot_dir / info['file'], 'rb') as handle:
                 values = np.frombuffer(handle.read(), dtype='<f4').reshape(info['shape'])
+            if field == 'kplanck':
+                # The cell whose lines are unresolved carries them in its grey Planck mean.
+                assert abs(values[0, 3] - (target + 0.75)) < 1e-6
+                values = values.copy()
+                values[0, 3] = target
             np.testing.assert_allclose(values, target, rtol=2e-7, atol=0.0)
+
+        quality = manifest['quality']['kplanck']
+        with gzip.open(plot_dir / quality['file'], 'rb') as handle:
+            cells = np.frombuffer(handle.read(), dtype='u1').reshape(quality['shape'])
+        assert cells[0, 3] == 4 and np.count_nonzero(cells) == 1  # sub_cell is not a cell-level flag
 
     print('Planck-scattering line-plot data test passed.')
 

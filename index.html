@@ -614,6 +614,7 @@
                 <th>Energy high [eV]</th>
                 <th>Opacity [cm<sup>2</sup> g<sup>-1</sup>]</th>
                 <th>Status</th>
+                <th>Quality</th>
               </tr>
             </thead>
             <tbody id="preview-body"></tbody>
@@ -741,6 +742,26 @@
           native group. Custom boundaries integrate the physical weight only over
           the overlapping interval. Extrapolation outside the published temperature,
           density, and energy ranges is disabled.
+        </p>
+      </div>
+
+      <div class="method-note reveal">
+        <span class="info-icon">i</span>
+        <p>
+          Each group value is the exact integral of STAR's tabulated spectrum, linear
+          between STAR's frequency points, over the group. The groups reproduce STAR's
+          grey Planck and Rosseland means. At low density many spectral lines are
+          narrower than STAR's frequency grid. STAR's grey Planck mean then sums the
+          line strengths directly, and only the line part of the groups is rescaled to
+          that sum. Values whose line content is uncertain carry a <code>quality</code>
+          flag, shown in the preview, the downloads and as hollow plot markers:
+          <code>lines_aliased</code> (line strength rescaled by more than 10%, and
+          <code>lines_aliased_x2</code> beyond a factor of 2), <code>lines_unresolved</code>
+          (the groups hold the continuum only; the line contribution is included in the
+          grey Planck mean), <code>rosseland_lines_rescaled</code> (line blocking per group
+          approximate below about 20 eV), <code>sub_cell</code> (group narrower than
+          STAR's frequency spacing), and <code>grey_rescaled</code> (all groups of the
+          cell scaled by 2&ndash;30% to reproduce STAR's grey mean).
         </p>
       </div>
     </section>

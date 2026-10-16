@@ -56,12 +56,17 @@ def main() -> None:
         )
 
     group_fields = []
+    cell_fields = []
     expected = (edges.size - 1, densities.size, temperatures.size)
     for key, values in payload.items():
         if values.ndim == 3:
             if values.shape != expected:
                 raise ValueError(f'{key}: expected {expected}, got {values.shape}')
             group_fields.append(key)
+        elif values.ndim == 2:
+            if values.shape != expected[1:]:
+                raise ValueError(f'{key}: expected {expected[1:]}, got {values.shape}')
+            cell_fields.append(key)
 
     start = 0
     for part_index, count in enumerate(sizes):
@@ -72,6 +77,8 @@ def main() -> None:
                 part_payload[key] = values[start:stop]
             elif key in group_fields:
                 part_payload[key] = values[:, :, start:stop]
+            elif key in cell_fields:
+                part_payload[key] = values[:, start:stop]
             else:
                 part_payload[key] = values
 

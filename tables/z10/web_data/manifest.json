@@ -8,21 +8,25 @@
     "kplanck": {
       "description": "Planck-weighted arithmetic mean of true absorption.",
       "label": "Planck-mean absorption opacity",
+      "units": "cm^2 g^-1",
       "weighting": "Planck arithmetic"
     },
     "kplanck_scattering": {
       "description": "Planck-weighted arithmetic mean of scattering opacity.",
       "label": "Planck-mean scattering opacity",
+      "units": "cm^2 g^-1",
       "weighting": "Planck arithmetic"
     },
     "krosseland": {
       "description": "Rosseland harmonic mean of absorption plus scattering.",
       "label": "Rosseland-mean total opacity",
+      "units": "cm^2 g^-1",
       "weighting": "Rosseland harmonic"
     },
     "krosseland_absorption": {
       "description": "Flux-weighted absorption using the total opacity in the transport denominator.",
       "label": "Rosseland flux-weighted absorption opacity",
+      "units": "cm^2 g^-1",
       "weighting": "Rosseland transport"
     }
   },
@@ -875,13 +879,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 2780890,
+          "compressed_bytes": 2780889,
           "dtype": "float32-le",
           "field": "krosseland",
           "file": "chunks/part00/krosseland_g0640_0704.f64.gz",
           "group_start": 640,
           "group_stop": 704,
-          "sha256": "9807ca6d0062bfccf574f89d15a2718d3c6bd271fa1ae7774a962f9979a9f87c",
+          "sha256": "509cd1adb3a49931f8148d247a60b05f7c5cde91d8f5286f72ba39780fe12127",
           "shape": [
             64,
             128,
@@ -901,7 +905,7 @@
           "file": "chunks/part00/krosseland_g0704_0768.f64.gz",
           "group_start": 704,
           "group_stop": 768,
-          "sha256": "536cebc11c477d6758e17c44ab93922f1278ac5321d54d012ec93214d2fed360",
+          "sha256": "6d46e042516cec2425139bccadff87dd9ec8384bd2439421e8650447814ddfcc",
           "shape": [
             64,
             128,
@@ -921,7 +925,7 @@
           "file": "chunks/part00/krosseland_g0768_0832.f64.gz",
           "group_start": 768,
           "group_stop": 832,
-          "sha256": "449326c80db329f5ae4674ba327c9e14b1e034e00abc19ed74535123bd31bcac",
+          "sha256": "db32c4de0e33e33cc88b4a770cdb2155efc57c48c36a01dd9c45a9cbefd03ddd",
           "shape": [
             64,
             128,
@@ -941,7 +945,7 @@
           "file": "chunks/part00/krosseland_g0832_0896.f64.gz",
           "group_start": 832,
           "group_stop": 896,
-          "sha256": "9c358852fcbd8272e2f2f5ddef86e606c1cdb7911867224eb69464747e63bd41",
+          "sha256": "49f461ec55fa6e3d756cf036fbdcfd34ce58fbed49ee2c81be5eeeb407c2bd9f",
           "shape": [
             64,
             128,
@@ -955,13 +959,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 2934293,
+          "compressed_bytes": 2934292,
           "dtype": "float32-le",
           "field": "krosseland",
           "file": "chunks/part00/krosseland_g0896_0960.f64.gz",
           "group_start": 896,
           "group_stop": 960,
-          "sha256": "6fe423ccaa0e62213999fbbc812be30a96ab3dddb9615f6f027e69db187a64d8",
+          "sha256": "e62402e856b215d195ec2a83c694ed3c277ceedf1c73b9b69af2c145c74256c5",
           "shape": [
             64,
             128,
@@ -975,13 +979,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 2926868,
+          "compressed_bytes": 2926869,
           "dtype": "float32-le",
           "field": "krosseland",
           "file": "chunks/part00/krosseland_g0960_1024.f64.gz",
           "group_start": 960,
           "group_stop": 1024,
-          "sha256": "e7b8947881030f37b7ebef82018d4c07f77e1853ce0573c78581ba2ad0b0e0f9",
+          "sha256": "27ff3f1eeee15c66929e92665bce0f6eec45e5d361f9619d55fea5e52a65dfd5",
           "shape": [
             64,
             128,
@@ -995,13 +999,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 4006725,
+          "compressed_bytes": 4006752,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0000_0064.f64.gz",
           "group_start": 0,
           "group_stop": 64,
-          "sha256": "a0cf371b7cc93b69eb284923907cd291a6ffe28ab56486eb87f2829b62a0aeaa",
+          "sha256": "2854c92b7b057c8fd771475680bbb30ff401e020f435a2e28eb26494e6aefb1d",
           "shape": [
             64,
             128,
@@ -1015,13 +1019,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 4007996,
+          "compressed_bytes": 4007989,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0064_0128.f64.gz",
           "group_start": 64,
           "group_stop": 128,
-          "sha256": "f5ea769479911b416dc8bb45d6ea147cd3522ccd7f158518e8b5ae969e2bccb8",
+          "sha256": "e331380152299e3035b3ed074a842ffa564ac3e4822b004085f06a0283b8212d",
           "shape": [
             64,
             128,
@@ -1035,13 +1039,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 4009924,
+          "compressed_bytes": 4009800,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0128_0192.f64.gz",
           "group_start": 128,
           "group_stop": 192,
-          "sha256": "4651047aaadbd8dd4abf73e08479c4475bbd2a700209795c4236586be7e4d512",
+          "sha256": "d6f55096d898c96785d77dd5f1a3077a43986420cea79ea86b929a801b0bf215",
           "shape": [
             64,
             128,
@@ -1055,13 +1059,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 4012759,
+          "compressed_bytes": 4012664,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0192_0256.f64.gz",
           "group_start": 192,
           "group_stop": 256,
-          "sha256": "bfca714486ba0c7f229796ecd615204dbee06affb2ec8e44c5606149b32f5486",
+          "sha256": "b1dfddf04a1163987312b97f69341bdf3352fdd391e708e3742417f28acc308f",
           "shape": [
             64,
             128,
@@ -1075,13 +1079,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 4015429,
+          "compressed_bytes": 4015396,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0256_0320.f64.gz",
           "group_start": 256,
           "group_stop": 320,
-          "sha256": "344e74aba16bea69cb535d35ebc2805c7da8af958e560195893a5211973a0c8b",
+          "sha256": "9265188a1f6bd0c7cf52c3fda7997f630c6f1aef954fdf8913c74bb9d97fb828",
           "shape": [
             64,
             128,
@@ -1095,13 +1099,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 4026573,
+          "compressed_bytes": 4026761,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0320_0384.f64.gz",
           "group_start": 320,
           "group_stop": 384,
-          "sha256": "012e1c553632ff5b9085b25c805a296e3a5a7653dd8fe30b3d0b00b9da67f4f0",
+          "sha256": "4776b2824ee688bb10b9ff0873b45ead03cfd0006a37590726c327ff192a3be6",
           "shape": [
             64,
             128,
@@ -1115,13 +1119,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 4035826,
+          "compressed_bytes": 4035852,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0384_0448.f64.gz",
           "group_start": 384,
           "group_stop": 448,
-          "sha256": "0dbb3d50456de83ced9af9e03fb755a412f01d79d188cc5dc08beadba21f57b0",
+          "sha256": "d2d0134b7a75f90e6f217cba2c580c9c05b64c64ce2bd505f9ecc01a4ff37b20",
           "shape": [
             64,
             128,
@@ -1135,13 +1139,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 4019182,
+          "compressed_bytes": 4019204,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0448_0512.f64.gz",
           "group_start": 448,
           "group_stop": 512,
-          "sha256": "51ae3aed2966cdadf87a55380514e99e299795484c1cb2b28635a5cb5f367483",
+          "sha256": "60ca416273c5582cdcd2ce5d1344885a32598ece3c99c3af1db75886e6a862df",
           "shape": [
             64,
             128,
@@ -1155,13 +1159,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 3999040,
+          "compressed_bytes": 3999091,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0512_0576.f64.gz",
           "group_start": 512,
           "group_stop": 576,
-          "sha256": "d752338c3f6e16995fbb1e5c70dbf1d1e9597744b5d98071c100ac4751230b38",
+          "sha256": "6cd44e29d1894c274ef06cf9af7866d294edc34fcfb626fa57572a6948634b04",
           "shape": [
             64,
             128,
@@ -1175,13 +1179,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 3975969,
+          "compressed_bytes": 3975979,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0576_0640.f64.gz",
           "group_start": 576,
           "group_stop": 640,
-          "sha256": "efd0129ac508ce86d6c30dc564f84fae12bebb5817c43f035c043ccb2be71375",
+          "sha256": "5c191ec69b534ca736ef39eb9f77890f5a10542cd7aa92465d9bb686c8457f1b",
           "shape": [
             64,
             128,
@@ -1195,13 +1199,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 3960620,
+          "compressed_bytes": 3961057,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0640_0704.f64.gz",
           "group_start": 640,
           "group_stop": 704,
-          "sha256": "7fe2f3b88758a46f2e7e02ad46ae5ec966635cf431297cec2057360db8084a0e",
+          "sha256": "b7dc02eafb2d523652df1d9a2e7fd9bd3b2953973c70c56a7094a4bd1042e4c7",
           "shape": [
             64,
             128,
@@ -1215,13 +1219,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 3933138,
+          "compressed_bytes": 3934767,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0704_0768.f64.gz",
           "group_start": 704,
           "group_stop": 768,
-          "sha256": "53584b074d8479c71eca0cd0cc1dc2cfb4b810a811c7373dc53e870becbb6e2a",
+          "sha256": "ae182ecf0833031758cb505e2b7b5167d1999efbbcda82889be0082b56f45d2a",
           "shape": [
             64,
             128,
@@ -1235,13 +1239,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 3914135,
+          "compressed_bytes": 3916973,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0768_0832.f64.gz",
           "group_start": 768,
           "group_stop": 832,
-          "sha256": "e56558126f7e0e4a1215e2af81b2d2cd21b70bdfcf5c99fda49a06d24c98f393",
+          "sha256": "71bd4ba72049765acb5643279b2d38080bb2daf8a5aa0aed4c01290d1f66a422",
           "shape": [
             64,
             128,
@@ -1255,13 +1259,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 3903489,
+          "compressed_bytes": 3908479,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0832_0896.f64.gz",
           "group_start": 832,
           "group_stop": 896,
-          "sha256": "fcca2699fa733aed77c8d8cf5a5e1850ac645eaae6f68308b70ade9f3b80d5f8",
+          "sha256": "dd9e921d375339bcddd793a8e6db5e7a0aafb17f57e8581ac7d9555b775bb025",
           "shape": [
             64,
             128,
@@ -1275,13 +1279,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 3917534,
+          "compressed_bytes": 3924889,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0896_0960.f64.gz",
           "group_start": 896,
           "group_stop": 960,
-          "sha256": "1e396643389a662b8fc0a934153a11f2b08f9169e57d45235aa3abee33d4c94c",
+          "sha256": "85852484a5437b0b2486e46a82c97a3ea0fc137bf96ed448465a5590db2c6113",
           "shape": [
             64,
             128,
@@ -1295,13 +1299,13 @@
             "rho",
             "temp"
           ],
-          "compressed_bytes": 3917951,
+          "compressed_bytes": 3925900,
           "dtype": "float32-le",
           "field": "krosseland_absorption",
           "file": "chunks/part00/krosseland_absorption_g0960_1024.f64.gz",
           "group_start": 960,
           "group_stop": 1024,
-          "sha256": "159fe5a3bf47673c6096e9cdea809a591752b6aafce07ff8b52d847e79649691",
+          "sha256": "e1ff88987b083c988e4b1758b95eb54ca0740c1bb8b432b8b5b0304d979a16a6",
           "shape": [
             64,
             128,
@@ -1998,6 +2002,6 @@
     "dtype": "float32-le",
     "group_chunk_size": 64
   },
-  "total_compressed_bytes": 219602073,
+  "total_compressed_bytes": 219627335,
   "version": 2
 }

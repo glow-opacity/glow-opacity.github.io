@@ -789,7 +789,6 @@ class NativeGroupQuadrature:
         self.log_planck = planck_log_weight_u(self.u_nodes) + log_quadrature
         self.log_rosseland = rosseland_log_weight_u(self.u_nodes) + log_quadrature
         self.planck_scaled = self._scaled(self.log_planck)
-        self.log_rosseland_sum = self._log_sum(self.log_rosseland)
         native_counts = np.diff(np.searchsorted(self.u_raw, edges_u, side="left"))
         self.sub_cell = native_counts == 0
 
@@ -815,11 +814,12 @@ class NativeGroupQuadrature:
 
     def rosseland(self, chi_nodes: np.ndarray, absorption_nodes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Group harmonic Rosseland means of chi and flux-weighted means of absorption."""
-        log_transport = self.log_rosseland - np.log(np.maximum(chi_nodes, CHI_MIN))
-        transport = self._scaled(log_transport)
+        chi_nodes = np.maximum(chi_nodes, CHI_MIN)
+        transport = self._scaled(self.log_rosseland - np.log(chi_nodes))
         transport_sum = self._sum(transport)
-        log_transport_sum = self._group_max(log_transport) + np.log(transport_sum)
-        total = np.exp(self.log_rosseland_sum - log_transport_sum)
+        # sum(W) / sum(W/chi) written with the transport weights t = W/chi, so that the total and the
+        # flux-weighted absorption share one set of weights and absorption <= total holds term by term.
+        total = self._sum(transport * chi_nodes) / transport_sum
         absorption = self._sum(transport * absorption_nodes) / transport_sum
         return total, absorption
 
@@ -989,10 +989,12 @@ def compute_group_collapse_v8(
         "krosseland", krosseland_target, _rosseland_regroup(krosseland, log_rosseland_group_weight))
     krosseland = rosseland_factor * krosseland
     # STAR does not compute a flux-weighted absorption mean, so its grey value is defined by these groups;
-    # target_means["krosseland_absorption"] is not used.
+    # target_means["krosseland_absorption"] is not used.  It takes the same quadrature factor as the total
+    # Rosseland mean, which keeps krosseland_absorption <= krosseland in every group.
+    absorption_factor = rosseland_factor
+    krosseland_absorption = absorption_factor * krosseland_absorption
     transport_weight = _scaled_group_weights(log_rosseland_group_weight) / krosseland
     absorption_target = float(np.sum(transport_weight * krosseland_absorption) / np.sum(transport_weight))
-    absorption_factor = 1.0
 
     planck_flags = np.zeros(quadrature.n_groups, dtype=np.uint8)
     rosseland_flags = np.zeros(quadrature.n_groups, dtype=np.uint8)

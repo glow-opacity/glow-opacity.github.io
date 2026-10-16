@@ -65,11 +65,11 @@
         "rho",
         "temp"
       ],
-      "compressed_bytes": 63731,
+      "compressed_bytes": 63728,
       "dtype": "float32-le",
       "file": "krosseland_absorption_grey.f64.gz",
       "positive_count": 16384,
-      "sha256": "e8a78285b9ebeaaa367d2f27bbc5328c50c1d20e23b206ac705507efdede917e",
+      "sha256": "e4aa1ea66147bf5c33ea544333cc613c435d36aa908f90187f5a56e2409200c4",
       "shape": [
         128,
         128

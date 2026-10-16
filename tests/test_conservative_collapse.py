@@ -178,6 +178,17 @@ def star_line_arrays_are_used():
     assert abs(math.log(result.diagnostics['rosseland_factor'])) < math.log(1.02)
 
 
+def absorption_never_exceeds_total_rosseland():
+    temperature, hnu, u, bb, bf, ff, sc = spike_spectrum()
+    edges = np.logspace(np.log10(hnu[0]), np.log10(hnu[-1]), 1025)
+    _quadrature, lines, continuum = grid_line_means(temperature, hnu, u, bb, ff, edges)
+    targets = dict(grey_targets(u, bb, bf, ff, sc), kplanck=continuum + lines)
+    targets['krosseland'] *= 0.97  # a quadrature-sized residual below the groups' own mean
+    result = mod.compute_group_collapse_v8(hnu, u, bb, bf, ff, sc, edges, targets, kplanck_lines=lines)
+    assert result.diagnostics['rosseland_factor'] < 1.0
+    assert np.all(result.fields['krosseland_absorption'] <= result.fields['krosseland'] * (1.0 + 1e-12))
+
+
 def main():
     smooth_spectrum_reproduces_grey_means()
     constant_opacity_is_constant_in_every_group()
@@ -185,6 +196,7 @@ def main():
     line_scale_moves_only_line_groups()
     point_line_rosseland_is_matched_by_line_scale()
     star_line_arrays_are_used()
+    absorption_never_exceeds_total_rosseland()
     print('Conservative group collapse tests passed.')
 
 

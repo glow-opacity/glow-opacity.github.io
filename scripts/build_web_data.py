@@ -30,21 +30,25 @@ FIELDS = (
 
 FIELD_METADATA = {
     'kplanck': {
+        'units': 'cm^2 g^-1',
         'label': 'Planck-mean absorption opacity',
         'weighting': 'Planck arithmetic',
         'description': 'Planck-weighted arithmetic mean of true absorption.',
     },
     'kplanck_scattering': {
+        'units': 'cm^2 g^-1',
         'label': 'Planck-mean scattering opacity',
         'weighting': 'Planck arithmetic',
         'description': 'Planck-weighted arithmetic mean of scattering opacity.',
     },
     'krosseland': {
+        'units': 'cm^2 g^-1',
         'label': 'Rosseland-mean total opacity',
         'weighting': 'Rosseland harmonic',
         'description': 'Rosseland harmonic mean of absorption plus scattering.',
     },
     'krosseland_absorption': {
+        'units': 'cm^2 g^-1',
         'label': 'Rosseland flux-weighted absorption opacity',
         'weighting': 'Rosseland transport',
         'description': (

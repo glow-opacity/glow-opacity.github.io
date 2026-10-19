@@ -1,0 +1,7 @@
+# GLOW is not meant to be found through search engines.
+# The page itself stays crawlable so crawlers can read its noindex tag and drop it;
+# every other file (images, scripts, data catalog) is closed to crawlers.
+User-agent: *
+Allow: /$
+Allow: /index.html$
+Disallow: /
